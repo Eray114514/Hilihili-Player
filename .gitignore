@@ -1,0 +1,13 @@
+node_modules
+.turbo
+.next
+dist
+coverage
+.env
+.env.local
+*.log
+data
+app-data
+*.db
+*.db-shm
+*.db-wal

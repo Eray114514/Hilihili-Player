@@ -1,0 +1,23 @@
+{
+  "name": "@hilihili/recommendation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "@hilihili/db": "file:../db",
+    "@hilihili/shared": "file:../shared"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.4",
+    "eslint": "^9.39.2",
+    "typescript": "^5.9.3"
+  }
+}
