@@ -1,6 +1,6 @@
 services:
   api:
-    image: ghcr.io/${GHCR_OWNER:-local}/hilihili-player:latest
+    image: ghcr.io/${GHCR_OWNER:-eray114514}/hilihili-player:latest
     command: pnpm --filter @hilihili/api start
     environment:
       HILI_API_HOST: 0.0.0.0
@@ -14,7 +14,7 @@ services:
     restart: unless-stopped
 
   worker:
-    image: ghcr.io/${GHCR_OWNER:-local}/hilihili-player:latest
+    image: ghcr.io/${GHCR_OWNER:-eray114514}/hilihili-player:latest
     command: pnpm --filter @hilihili/worker start
     environment:
       HILI_DATA_DIR: /data
@@ -25,7 +25,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: ghcr.io/${GHCR_OWNER:-local}/hilihili-player:latest
+    image: ghcr.io/${GHCR_OWNER:-eray114514}/hilihili-player:latest
     command: pnpm --filter @hilihili/web start
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:4141

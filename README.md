@@ -52,8 +52,16 @@ Library_Root/
 3. NAS 使用 `docker-compose.yml` 启动服务。
 4. NAS 上安装 Watchtower，自动拉取 `ghcr.io/<owner>/hilihili-player:latest`。
 
+镜像名必须全小写；本仓库默认镜像为 `ghcr.io/eray114514/hilihili-player:latest`。NAS 不需要把 Docker 默认镜像源改成 GHCR，镜像地址里的 `ghcr.io` 会让 Docker 直接从 GitHub Container Registry 拉取。仓库和 package 如果保持私有，需要先在 NAS 上执行一次：
+
+```bash
+docker login ghcr.io -u Eray114514
+```
+
+密码使用 GitHub Personal Access Token，至少需要 `read:packages` 权限；如果 GHCR package 改成公开，则 NAS 可以免登录拉取。
+
 示例：
 
 ```bash
-GHCR_OWNER=your-github-name HILI_MEDIA_ROOT=/volume1/video docker compose up -d
+GHCR_OWNER=eray114514 HILI_MEDIA_ROOT=/volume1/video docker compose up -d
 ```
