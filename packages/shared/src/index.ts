@@ -4,6 +4,9 @@ export const imageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif
 export type MediaKind = "video" | "image";
 export type InteractionKind = "like" | "dislike" | "watch" | "finish" | "blacklist_up";
 export type StructureStatus = "standard" | "fallback";
+export type ThumbnailStatus = "pending" | "ready" | "failed";
+export type ScanStatus = "queued" | "running" | "complete" | "failed";
+export type Reaction = "like" | "dislike" | null;
 
 export type FeedItem = {
   id: string;
@@ -12,7 +15,9 @@ export type FeedItem = {
   categoryName: string;
   creatorName: string;
   coverUrl: string | null;
+  thumbnailStatus: ThumbnailStatus;
   firstSeenAt: string;
+  displayDate: string;
   score?: number;
   partCount?: number;
 };
@@ -32,6 +37,19 @@ export type Library = {
   rootPath: string;
   enabled: boolean;
   createdAt: string;
+};
+
+export type ScanRun = {
+  id: string;
+  libraryId: string | null;
+  status: ScanStatus;
+  message: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  itemsIndexed: number;
+  thumbnailsTotal: number;
+  thumbnailsReady: number;
+  thumbnailsFailed: number;
 };
 
 export type DirectoryEntry = {

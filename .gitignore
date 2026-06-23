@@ -11,3 +11,4 @@ app-data
 *.db
 *.db-shm
 *.db-wal
+.hilihili-safe-demo

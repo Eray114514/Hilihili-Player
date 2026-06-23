@@ -25,6 +25,16 @@ corepack pnpm dev
 
 复制 `.env.example` 为 `.env` 后可调整数据目录和端口。
 
+### 隐私安全演示模式
+
+需要调试界面、播放和扫描功能，但不希望读取真实媒体库时，运行：
+
+```bash
+corepack pnpm dev:safe
+```
+
+浏览器打开 `http://localhost:3100`。该模式会生成彩条视频和测试图片，使用独立数据库与缓存，并把 API 文件访问限制在 `.hilihili-safe-demo/safe-demo-library` 内；真实 `app-data` 和媒体目录不会被读取。
+
 ## 视频库结构
 
 ```text

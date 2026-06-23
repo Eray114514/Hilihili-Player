@@ -51,14 +51,14 @@ if not exist "node_modules" (
   )
 )
 
-echo Starting services in separate windows...
+echo Starting services in this window...
+echo Press Ctrl+C and then Y to stop all services.
 echo.
 
-start "Hilihili API" cmd /k "cd /d ""%CD%"" && set HILI_API_HOST=%HILI_API_HOST%&& set HILI_API_PORT=%HILI_API_PORT%&& set HILI_DATA_DIR=%HILI_DATA_DIR%&& corepack pnpm --filter @hilihili/api dev"
-start "Hilihili Worker" cmd /k "cd /d ""%CD%"" && set HILI_DATA_DIR=%HILI_DATA_DIR%&& set HILI_SCAN_INTERVAL_MS=%HILI_SCAN_INTERVAL_MS%&& corepack pnpm --filter @hilihili/worker dev"
-start "Hilihili Web" cmd /k "cd /d ""%CD%"" && set NEXT_PUBLIC_API_BASE_URL=%NEXT_PUBLIC_API_BASE_URL%&& corepack pnpm --filter @hilihili/web dev"
-
-echo Hilihili is starting.
-echo Open http://localhost:3000 after the Web window finishes compiling.
-echo.
-pause
+corepack pnpm --parallel --filter @hilihili/web --filter @hilihili/api --filter @hilihili/worker dev
+if errorlevel 1 (
+  echo.
+  echo [ERROR] Service startup failed.
+  pause
+  exit /b 1
+)

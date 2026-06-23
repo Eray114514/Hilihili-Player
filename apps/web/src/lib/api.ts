@@ -1,4 +1,4 @@
-import type { DirectoryEntry, FeedItem, Library } from "@hilihili/shared";
+import type { DirectoryEntry, FeedItem, Library, Reaction, ScanRun, ThumbnailStatus } from "@hilihili/shared";
 
 export const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4141";
 
@@ -30,10 +30,23 @@ export async function postJson<T>(path: string, body: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export async function putJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(apiUrl(path), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<T>;
+}
+
 export type FeedResponse = { items: FeedItem[] };
 export type LibrariesResponse = { libraries: Library[] };
 export type FsRootsResponse = { roots: DirectoryEntry[] };
 export type FsListResponse = { path: string; parent: string | null; entries: DirectoryEntry[] };
+export type ScanRunsResponse = { runs: ScanRun[] };
 export type Category = { id: string; name: string; itemCount: number };
 export type Creator = { id: string; name: string; categoryName: string; itemCount: number };
 
@@ -47,6 +60,11 @@ export type ItemDetail = {
     category_id: string | null;
     creator_id: string | null;
     first_seen_at: string;
+    thumbnail_status: ThumbnailStatus;
+    reaction: Reaction;
+    creatorBlacklisted: number;
+    resumePartId: string | null;
+    resumePositionSeconds: number | null;
   };
   parts: { id: string; title: string; partIndex: number; sizeBytes: number }[];
   comments: { id: string; body: string; atSeconds: number | null; createdAt: string }[];

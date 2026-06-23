@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "dev": "pnpm --parallel --filter @hilihili/web --filter @hilihili/api --filter @hilihili/worker dev",
+    "dev:safe": "node scripts/dev-safe.mjs",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
@@ -19,6 +20,8 @@
     "onlyBuiltDependencies": [
       "better-sqlite3",
       "esbuild",
+      "ffmpeg-static",
+      "ffprobe-static",
       "sharp",
       "unrs-resolver"
     ]

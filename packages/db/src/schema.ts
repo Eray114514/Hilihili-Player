@@ -48,6 +48,11 @@ export const mediaItems = sqliteTable(
     folderPath: text("folder_path"),
     fingerprint: text("fingerprint").notNull(),
     coverPath: text("cover_path"),
+    generatedCoverPath: text("generated_cover_path"),
+    thumbnailStatus: text("thumbnail_status", { enum: ["pending", "ready", "failed"] }).notNull().default("pending"),
+    thumbnailError: text("thumbnail_error"),
+    contentPublishedAt: text("content_published_at"),
+    fileModifiedAt: text("file_modified_at"),
     hidden: integer("hidden", { mode: "boolean" }).notNull().default(false),
     structureStatus: text("structure_status", { enum: ["standard", "fallback"] }).notNull(),
     firstSeenAt: text("first_seen_at").notNull(),
@@ -135,9 +140,24 @@ export const comments = sqliteTable(
 export const scanRuns = sqliteTable("scan_runs", {
   id: text("id").primaryKey(),
   libraryId: text("library_id").references(() => libraries.id),
-  status: text("status", { enum: ["running", "complete", "failed"] }).notNull(),
+  status: text("status", { enum: ["queued", "running", "complete", "failed"] }).notNull(),
   message: text("message"),
   startedAt: text("started_at").notNull(),
   finishedAt: text("finished_at"),
-  itemsIndexed: integer("items_indexed").notNull().default(0)
+  itemsIndexed: integer("items_indexed").notNull().default(0),
+  thumbnailsTotal: integer("thumbnails_total").notNull().default(0),
+  thumbnailsReady: integer("thumbnails_ready").notNull().default(0),
+  thumbnailsFailed: integer("thumbnails_failed").notNull().default(0)
+});
+
+export const itemPreferences = sqliteTable("item_preferences", {
+  itemId: text("item_id").primaryKey().references(() => mediaItems.id),
+  reaction: text("reaction", { enum: ["like", "dislike"] }),
+  updatedAt: text("updated_at").notNull()
+});
+
+export const creatorPreferences = sqliteTable("creator_preferences", {
+  creatorId: text("creator_id").primaryKey().references(() => creators.id),
+  blacklisted: integer("blacklisted", { mode: "boolean" }).notNull().default(false),
+  updatedAt: text("updated_at").notNull()
 });

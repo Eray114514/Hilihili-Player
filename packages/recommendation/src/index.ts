@@ -8,7 +8,11 @@ type CandidateRow = {
   creator_id: string | null;
   category_id: string | null;
   first_seen_at: string;
+  content_published_at: string | null;
+  file_modified_at: string | null;
   cover_path: string | null;
+  generated_cover_path: string | null;
+  thumbnail_status: "pending" | "ready" | "failed";
   category_name: string | null;
   creator_name: string | null;
   part_count: number;
@@ -23,7 +27,9 @@ export type FeedOptions = {
   creatorId?: string;
   includeImages?: boolean;
   includeFinished?: boolean;
-  mode?: "recommended" | "latest" | "shuffle";
+  kind?: "video" | "image";
+  excludeId?: string;
+  mode?: "recommended" | "latest" | "oldest" | "shuffle";
 };
 
 export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
@@ -34,6 +40,14 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
 
   if (!options.includeImages) {
     filters.push("mi.kind = 'video'");
+  }
+  if (options.kind) {
+    filters.push("mi.kind = ?");
+    params.push(options.kind);
+  }
+  if (options.excludeId) {
+    filters.push("mi.id != ?");
+    params.push(options.excludeId);
   }
   if (!options.includeFinished) {
     filters.push("COALESCE(wp.finished, 0) = 0");
@@ -49,7 +63,8 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
 
   const rows = db.prepare(`
     SELECT
-      mi.id, mi.kind, mi.title, mi.creator_id, mi.category_id, mi.first_seen_at, mi.cover_path,
+      mi.id, mi.kind, mi.title, mi.creator_id, mi.category_id, mi.first_seen_at,
+      mi.content_published_at, mi.file_modified_at, mi.cover_path, mi.generated_cover_path, mi.thumbnail_status,
       c.name AS category_name,
       cr.name AS creator_name,
       COALESCE(pc.part_count, 0) AS part_count,
@@ -57,6 +72,9 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
       CASE WHEN EXISTS (
         SELECT 1 FROM interactions i
         WHERE i.kind = 'blacklist_up' AND i.target_type = 'creator' AND i.target_id = mi.creator_id
+      ) OR EXISTS (
+        SELECT 1 FROM creator_preferences cp
+        WHERE cp.creator_id = mi.creator_id AND cp.blacklisted = 1
       ) THEN 1 ELSE 0 END AS creator_blacklisted
     FROM media_items mi
     LEFT JOIN categories c ON c.id = mi.category_id
@@ -74,9 +92,14 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
     score: scoreCandidate(db, row, options.seed)
   }));
 
+  const dateFor = (row: CandidateRow) => row.content_published_at ?? row.file_modified_at ?? row.first_seen_at;
   const sorted = options.mode === "latest"
-    ? scored.sort((a, b) => b.row.first_seen_at.localeCompare(a.row.first_seen_at))
-    : scored.sort((a, b) => b.score - a.score);
+    ? scored.sort((a, b) => dateFor(b.row).localeCompare(dateFor(a.row)))
+    : options.mode === "oldest"
+      ? scored.sort((a, b) => dateFor(a.row).localeCompare(dateFor(b.row)))
+      : options.mode === "shuffle"
+        ? scored.sort((a, b) => seededRandom(`${options.seed}:${a.row.id}`) - seededRandom(`${options.seed}:${b.row.id}`))
+        : scored.sort((a, b) => b.score - a.score);
 
   return sorted.slice(0, limit).map(({ row, score }) => toFeedItem(row, score));
 }
@@ -133,8 +156,10 @@ function toFeedItem(row: CandidateRow, score: number): FeedItem {
     title: row.title,
     categoryName: row.category_name ?? "未归类",
     creatorName: row.creator_name ?? "未知UP",
-    coverUrl: row.cover_path ? `/media/items/${row.id}/cover` : null,
+    coverUrl: row.cover_path || row.generated_cover_path ? `/media/items/${row.id}/cover` : null,
+    thumbnailStatus: row.thumbnail_status,
     firstSeenAt: row.first_seen_at,
+    displayDate: row.content_published_at ?? row.file_modified_at ?? row.first_seen_at,
     partCount: row.part_count,
     score
   };

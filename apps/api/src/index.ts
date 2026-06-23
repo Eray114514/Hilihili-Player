@@ -1,11 +1,11 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
-import { basename, extname, join, parse, resolve } from "node:path";
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { platform } from "node:os";
 import { lookup } from "mime-types";
 import { createId, getSqlite, nowIso } from "@hilihili/db";
-import { scanEnabledLibraries, scanLibrary } from "@hilihili/media";
+import { enqueueScan } from "@hilihili/media";
 import { getRecommendedFeed } from "@hilihili/recommendation";
 import type { DirectoryEntry, InteractionKind } from "@hilihili/shared";
 
@@ -43,7 +43,7 @@ app.get("/fs/roots", async () => ({
 
 app.get<{ Querystring: { path?: string } }>("/fs/list", async (request, reply) => {
   const targetPath = request.query.path ? resolve(request.query.path) : getBrowsableRoots()[0]?.path;
-  if (!targetPath || !existsSync(targetPath)) {
+  if (!targetPath || !isPathAllowed(targetPath) || !existsSync(targetPath)) {
     return reply.code(404).send({ error: "Path not found" });
   }
 
@@ -61,7 +61,8 @@ app.get<{ Querystring: { path?: string } }>("/fs/list", async (request, reply) =
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  return { path: targetPath, parent: parse(targetPath).root === targetPath ? null : resolve(targetPath, ".."), entries };
+  const parentCandidate = resolve(targetPath, "..");
+  return { path: targetPath, parent: isPathAllowed(parentCandidate) ? parentCandidate : null, entries };
 });
 
 app.get("/libraries", async () => ({
@@ -70,7 +71,7 @@ app.get("/libraries", async () => ({
 
 app.post<{ Body: AddLibraryBody }>("/libraries", async (request, reply) => {
   const rootPath = request.body.rootPath ? resolve(request.body.rootPath) : null;
-  if (!rootPath || !existsSync(rootPath) || !statSync(rootPath).isDirectory()) {
+  if (!rootPath || !isPathAllowed(rootPath) || !existsSync(rootPath) || !statSync(rootPath).isDirectory()) {
     return reply.code(400).send({ error: "Choose an existing directory" });
   }
 
@@ -78,25 +79,34 @@ app.post<{ Body: AddLibraryBody }>("/libraries", async (request, reply) => {
   const name = request.body.name?.trim() || basename(rootPath) || rootPath;
   db.prepare("INSERT INTO libraries (id, name, root_path, enabled, created_at) VALUES (?, ?, ?, 1, ?)")
     .run(id, name, rootPath, nowIso());
+  const scanRunId = enqueueScan(id);
 
-  return reply.code(201).send({ id, name, rootPath });
+  return reply.code(201).send({ id, name, rootPath, scanRunId });
 });
 
 app.post<{ Body: { libraryId?: string } }>("/scan/runs", async (request, reply) => {
-  try {
-    const itemsIndexed = request.body.libraryId
-      ? await scanLibrary(request.body.libraryId)
-      : await scanEnabledLibraries();
-    return { status: "complete", itemsIndexed };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return reply.code(500).send({ error: message });
-  }
+  const scanRunId = enqueueScan(request.body.libraryId);
+  return reply.code(202).send({ scanRunId, status: "queued" });
 });
 
 app.get("/scan/runs", async () => ({
-  runs: db.prepare("SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT 20").all()
+  runs: db.prepare(`
+    SELECT id, library_id AS libraryId, status, message, started_at AS startedAt, finished_at AS finishedAt,
+      items_indexed AS itemsIndexed, thumbnails_total AS thumbnailsTotal,
+      thumbnails_ready AS thumbnailsReady, thumbnails_failed AS thumbnailsFailed
+    FROM scan_runs ORDER BY started_at DESC LIMIT 20
+  `).all()
 }));
+
+app.get<{ Params: { id: string } }>("/scan/runs/:id", async (request, reply) => {
+  const run = db.prepare(`
+    SELECT id, library_id AS libraryId, status, message, started_at AS startedAt, finished_at AS finishedAt,
+      items_indexed AS itemsIndexed, thumbnails_total AS thumbnailsTotal,
+      thumbnails_ready AS thumbnailsReady, thumbnails_failed AS thumbnailsFailed
+    FROM scan_runs WHERE id = ?
+  `).get(request.params.id);
+  return run ?? reply.code(404).send({ error: "Scan run not found" });
+});
 
 app.get<{ Querystring: { seed?: string; limit?: string } }>("/feeds/home", async (request) => ({
   items: getRecommendedFeed({
@@ -106,13 +116,14 @@ app.get<{ Querystring: { seed?: string; limit?: string } }>("/feeds/home", async
   })
 }));
 
-app.get<{ Querystring: { seed?: string; limit?: string } }>("/feeds/dynamic", async (request) => ({
+app.get<{ Querystring: { seed?: string; limit?: string; sort?: string; kind?: string } }>("/feeds/dynamic", async (request) => ({
   items: getRecommendedFeed({
     seed: request.query.seed ?? "dynamic",
     limit: Number(request.query.limit ?? 36),
-    includeImages: true,
+    includeImages: request.query.kind !== "video",
+    kind: request.query.kind === "image" ? "image" : request.query.kind === "video" ? "video" : undefined,
     includeFinished: true,
-    mode: "latest"
+    mode: request.query.sort === "oldest" ? "oldest" : request.query.sort === "random" ? "shuffle" : "latest"
   })
 }));
 
@@ -157,10 +168,15 @@ app.get("/creators", async () => ({
 
 app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
   const item = db.prepare(`
-    SELECT mi.*, c.name AS categoryName, cr.name AS creatorName
+    SELECT mi.*, c.name AS categoryName, cr.name AS creatorName,
+      ip.reaction, COALESCE(cp.blacklisted, 0) AS creatorBlacklisted,
+      wp.part_id AS resumePartId, wp.position_seconds AS resumePositionSeconds
     FROM media_items mi
     LEFT JOIN categories c ON c.id = mi.category_id
     LEFT JOIN creators cr ON cr.id = mi.creator_id
+    LEFT JOIN item_preferences ip ON ip.item_id = mi.id
+    LEFT JOIN creator_preferences cp ON cp.creator_id = mi.creator_id
+    LEFT JOIN watch_progress wp ON wp.item_id = mi.id
     WHERE mi.id = ?
   `).get(request.params.id);
   if (!item) {
@@ -171,19 +187,49 @@ app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
     .all(request.params.id);
   const comments = db.prepare("SELECT id, body, at_seconds AS atSeconds, created_at AS createdAt FROM comments WHERE item_id = ? ORDER BY created_at DESC")
     .all(request.params.id);
-  const related = getRecommendedFeed({ limit: 12, seed: request.params.id, includeFinished: false });
+  const related = getRecommendedFeed({ limit: 12, seed: request.params.id, includeFinished: false, excludeId: request.params.id });
 
   return { item, parts, comments, related };
 });
 
 app.get<{ Params: { id: string } }>("/media/items/:id/cover", async (request, reply) => {
-  const row = db.prepare("SELECT cover_path FROM media_items WHERE id = ?").get(request.params.id) as { cover_path: string | null } | undefined;
-  if (!row?.cover_path || !existsSync(row.cover_path)) {
+  const row = db.prepare("SELECT cover_path, generated_cover_path FROM media_items WHERE id = ?").get(request.params.id) as
+    | { cover_path: string | null; generated_cover_path: string | null }
+    | undefined;
+  const coverPath = row?.cover_path && existsSync(row.cover_path)
+    ? row.cover_path
+    : row?.generated_cover_path && existsSync(row.generated_cover_path) ? row.generated_cover_path : null;
+  if (!coverPath) {
     return reply.code(404).send({ error: "Cover not found" });
   }
 
-  reply.header("Content-Type", lookup(row.cover_path) || "application/octet-stream");
-  return reply.send(createReadStream(row.cover_path));
+  reply.header("Content-Type", lookup(coverPath) || "application/octet-stream");
+  reply.header("Cache-Control", "public, max-age=86400");
+  return reply.send(createReadStream(coverPath));
+});
+
+app.put<{ Params: { id: string }; Body: { reaction?: "like" | "dislike" | null } }>("/items/:id/reaction", async (request, reply) => {
+  if (request.body.reaction !== null && request.body.reaction !== "like" && request.body.reaction !== "dislike") {
+    return reply.code(400).send({ error: "Invalid reaction" });
+  }
+  if (request.body.reaction === null) {
+    db.prepare("DELETE FROM item_preferences WHERE item_id = ?").run(request.params.id);
+  } else {
+    db.prepare(`
+      INSERT INTO item_preferences (item_id, reaction, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(item_id) DO UPDATE SET reaction = excluded.reaction, updated_at = excluded.updated_at
+    `).run(request.params.id, request.body.reaction, nowIso());
+  }
+  return { reaction: request.body.reaction ?? null };
+});
+
+app.put<{ Params: { id: string }; Body: { blacklisted?: boolean } }>("/creators/:id/blacklist", async (request) => {
+  const blacklisted = Boolean(request.body.blacklisted);
+  db.prepare(`
+    INSERT INTO creator_preferences (creator_id, blacklisted, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(creator_id) DO UPDATE SET blacklisted = excluded.blacklisted, updated_at = excluded.updated_at
+  `).run(request.params.id, blacklisted ? 1 : 0, nowIso());
+  return { blacklisted };
 });
 
 app.get<{ Params: { id: string }; Headers: { range?: string } }>("/media/parts/:id/stream", async (request, reply) => {
@@ -285,6 +331,10 @@ const port = Number(process.env.HILI_API_PORT ?? 4141);
 await app.listen({ host, port });
 
 function getBrowsableRoots(): DirectoryEntry[] {
+  const allowedRoot = getAllowedRoot();
+  if (allowedRoot) {
+    return [{ name: basename(allowedRoot) || "安全演示库", path: allowedRoot, isDirectory: true }];
+  }
   if (platform() === "win32") {
     const roots: DirectoryEntry[] = [];
     for (let code = 65; code <= 90; code += 1) {
@@ -299,4 +349,20 @@ function getBrowsableRoots(): DirectoryEntry[] {
   return ["/", "/mnt", "/media", "/volume1"]
     .filter((path) => existsSync(path))
     .map((path) => ({ name: path, path, isDirectory: true }));
+}
+
+function getAllowedRoot() {
+  if (process.env.HILI_TEST_MODE !== "1" || !process.env.HILI_ALLOWED_MEDIA_ROOT) {
+    return null;
+  }
+  return resolve(process.env.HILI_ALLOWED_MEDIA_ROOT);
+}
+
+function isPathAllowed(targetPath: string) {
+  const allowedRoot = getAllowedRoot();
+  if (!allowedRoot) {
+    return true;
+  }
+  const pathFromRoot = relative(allowedRoot, resolve(targetPath));
+  return pathFromRoot === "" || (!isAbsolute(pathFromRoot) && !pathFromRoot.startsWith("..") && !pathFromRoot.includes(`..${sep}`));
 }

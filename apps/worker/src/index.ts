@@ -1,18 +1,29 @@
 import { getSqlite } from "@hilihili/db";
-import { scanEnabledLibraries } from "@hilihili/media";
+import { enqueueScan, processNextScanRun } from "@hilihili/media";
 
 const intervalMs = Number(process.env.HILI_SCAN_INTERVAL_MS ?? 900000);
 
 getSqlite();
 
-async function runScan() {
+let processing = false;
+
+async function drainQueue() {
+  if (processing) {
+    return;
+  }
+  processing = true;
   try {
-    const count = await scanEnabledLibraries();
-    console.log(`[worker] scan complete: ${count} item(s) indexed`);
+    while (await processNextScanRun()) {
+      console.log("[worker] scan run complete");
+    }
   } catch (error) {
     console.error("[worker] scan failed", error);
+  } finally {
+    processing = false;
   }
 }
 
-await runScan();
-setInterval(runScan, intervalMs);
+enqueueScan();
+await drainQueue();
+setInterval(() => void drainQueue(), 1000);
+setInterval(() => enqueueScan(), intervalMs);

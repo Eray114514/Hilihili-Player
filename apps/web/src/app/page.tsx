@@ -7,7 +7,7 @@ import { VideoGrid } from "@/components/VideoCard";
 import { getJson, type Category, type FeedResponse } from "@/lib/api";
 
 export default function HomePage() {
-  const [seed, setSeed] = useState(String(Date.now()));
+  const [seed, setSeed] = useState("home");
   const [items, setItems] = useState<FeedResponse["items"]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,7 +44,7 @@ export default function HomePage() {
         </button>
       </section>
 
-      {items.length === 0 && !loading ? (
+      {loading ? <HomeSkeleton /> : items.length === 0 ? (
         <EmptyState title="还没有视频" body="去设置里添加一个本机或 NAS 挂载目录，然后扫描媒体库。" />
       ) : (
         <VideoGrid items={items} />
@@ -63,4 +63,8 @@ export default function HomePage() {
       </section>
     </AppShell>
   );
+}
+
+function HomeSkeleton() {
+  return <div className="grid animate-pulse grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">{Array.from({ length: 12 }, (_, index) => <div key={index}><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-2 h-4 rounded bg-white/5" /><div className="mt-2 h-3 w-1/2 rounded bg-white/[0.035]" /></div>)}</div>;
 }

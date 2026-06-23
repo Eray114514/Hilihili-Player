@@ -129,6 +129,16 @@ function migrate(db: Database.Database) {
       finished_at TEXT,
       items_indexed INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS item_preferences (
+      item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+      reaction TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS creator_preferences (
+      creator_id TEXT PRIMARY KEY REFERENCES creators(id) ON DELETE CASCADE,
+      blacklisted INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS media_items_library_idx ON media_items(library_id);
     CREATE INDEX IF NOT EXISTS media_items_category_idx ON media_items(category_id);
     CREATE INDEX IF NOT EXISTS media_items_creator_idx ON media_items(creator_id);
@@ -136,6 +146,22 @@ function migrate(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS interactions_target_idx ON interactions(target_type, target_id);
     CREATE INDEX IF NOT EXISTS comments_item_idx ON comments(item_id);
   `);
+
+  ensureColumn(db, "media_items", "generated_cover_path", "TEXT");
+  ensureColumn(db, "media_items", "thumbnail_status", "TEXT NOT NULL DEFAULT 'pending'");
+  ensureColumn(db, "media_items", "thumbnail_error", "TEXT");
+  ensureColumn(db, "media_items", "content_published_at", "TEXT");
+  ensureColumn(db, "media_items", "file_modified_at", "TEXT");
+  ensureColumn(db, "scan_runs", "thumbnails_total", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "scan_runs", "thumbnails_ready", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "scan_runs", "thumbnails_failed", "INTEGER NOT NULL DEFAULT 0");
+}
+
+function ensureColumn(db: Database.Database, table: string, column: string, definition: string) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!columns.some((item) => item.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 export type SqliteDatabase = Database.Database;
