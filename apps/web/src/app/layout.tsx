@@ -16,6 +16,13 @@ export const metadata: Metadata = {
   title: "Hilihili Player",
   description: "A private LAN video library and recommendation app",
   manifest: "/manifest.webmanifest",
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico", sizes: "any" }
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }]
+  },
   appleWebApp: {
     capable: true,
     title: "Hilihili"
