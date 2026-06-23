@@ -1,6 +1,6 @@
 "use client";
 
-import { Expand, Pause, PictureInPicture, Play, Volume2, VolumeX } from "lucide-react";
+import { Expand, LoaderCircle, Pause, PictureInPicture, Play, Volume2, VolumeX } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiUrl, postJson } from "@/lib/api";
 
@@ -28,6 +28,18 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
   const [holdingFast, setHoldingFast] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [autoPlayBlocked, setAutoPlayBlocked] = useState(false);
+  const [buffering, setBuffering] = useState(true);
+  const [buffered, setBuffered] = useState(0);
+  const [prevPartId, setPrevPartId] = useState<string | null>(null);
+
+  if (part && part.id !== prevPartId) {
+    setPrevPartId(part.id);
+    setBuffering(true);
+    setBuffered(0);
+    setCurrent(0);
+    setDuration(0);
+    setAutoPlayBlocked(false);
+  }
 
   const showControls = useCallback(() => {
     setControlsVisible(true);
@@ -50,15 +62,6 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
     if (!video) return;
     video.playbackRate = holdingFast ? 3 : speed;
   }, [speed, holdingFast]);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !part) return;
-    setAutoPlayBlocked(false);
-    setCurrent(0);
-    setDuration(0);
-    void video.play().catch(() => setAutoPlayBlocked(true));
-  }, [part]);
 
   useEffect(() => {
     if (!part) return;
@@ -100,6 +103,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
   function seekTo(value: number) {
     const video = videoRef.current;
     if (!video) return;
+    setBuffering(true);
     video.currentTime = value;
     setCurrent(value);
   }
@@ -145,30 +149,46 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
         onPointerLeave={() => { if (holdingFastRef.current) finishHold(); }}
       >
         <video
+          key={partId}
           ref={videoRef}
           src={apiUrl(`/media/parts/${part.id}/stream`)}
           className="h-full w-full select-none object-contain"
           playsInline
           autoPlay
-          onPlay={() => setPlaying(true)}
+          preload="auto"
+          onPlay={() => { setPlaying(true); setBuffering(false); }}
           onPause={() => setPlaying(false)}
+          onWaiting={() => setBuffering(true)}
+          onPlaying={() => setBuffering(false)}
+          onCanPlay={() => setBuffering(false)}
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
             setDuration(video.duration || 0);
-            if (resumedPartRef.current !== part.id && resumePosition > 0 && resumePosition < video.duration - 3) {
+            if (resumedPartRef.current !== partId && resumePosition > 0 && resumePosition < video.duration - 3) {
               video.currentTime = resumePosition;
               setCurrent(resumePosition);
-              resumedPartRef.current = part.id;
+              resumedPartRef.current = partId;
             }
             void video.play().catch(() => setAutoPlayBlocked(true));
           }}
           onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
+          onProgress={(event) => {
+            const video = event.currentTarget;
+            if (video.buffered.length > 0) {
+              setBuffered(video.buffered.end(video.buffered.length - 1));
+            }
+          }}
           onEnded={markFinished}
         />
       </div>
 
+      {buffering && !holdingFast ? (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+          <LoaderCircle className="animate-spin text-white/80" size={42} />
+        </div>
+      ) : null}
       {holdingFast ? <div className="pointer-events-none absolute left-1/2 top-5 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-sm font-semibold">3× 快进中</div> : null}
-      {autoPlayBlocked || !playing ? (
+      {autoPlayBlocked || (!playing && !buffering) ? (
         <button className="absolute left-1/2 top-1/2 grid h-16 w-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-white/92 text-black shadow-xl transition hover:scale-105" onClick={togglePlay} aria-label="播放">
           <Play className="ml-1" size={28} fill="currentColor" />
         </button>
@@ -179,7 +199,15 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
         onPointerDown={(event) => event.stopPropagation()}
         onPointerUp={(event) => event.stopPropagation()}
       >
-        <input aria-label="播放进度" type="range" min={0} max={duration || 0} value={current} onChange={(event) => seekTo(Number(event.target.value))} className="player-range w-full" />
+        <div className="relative">
+          <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/20">
+            <div className="h-full bg-white/30" style={{ width: `${duration > 0 ? (buffered / duration) * 100 : 0}%` }} />
+          </div>
+          <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full">
+            <div className="h-full bg-[var(--accent)]" style={{ width: `${duration > 0 ? (current / duration) * 100 : 0}%` }} />
+          </div>
+          <input aria-label="播放进度" type="range" min={0} max={duration || 0} value={current} onChange={(event) => seekTo(Number(event.target.value))} className="player-range relative w-full" />
+        </div>
         <div className="mt-2 flex items-center gap-2">
           <button className="player-control" onClick={togglePlay} aria-label={playing ? "暂停" : "播放"}>{playing ? <Pause size={21} fill="currentColor" /> : <Play size={21} fill="currentColor" />}</button>
           <span className="min-w-[96px] text-xs tabular-nums text-white/75">{formatTime(current)} / {formatTime(duration)}</span>
