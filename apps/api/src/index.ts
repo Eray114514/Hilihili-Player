@@ -242,10 +242,14 @@ app.get<{ Params: { id: string }; Headers: { range?: string } }>("/media/parts/:
   const range = request.headers.range;
   const contentType = lookup(extname(row.path)) || "application/octet-stream";
 
+  reply.header("Accept-Ranges", "bytes");
+  reply.header("Cache-Control", "public, max-age=3600");
+  reply.header("X-Content-Type-Options", "nosniff");
+  reply.header("Connection", "keep-alive");
+
   if (!range) {
     reply.header("Content-Length", total);
     reply.header("Content-Type", contentType);
-    reply.header("Accept-Ranges", "bytes");
     return reply.send(createReadStream(row.path));
   }
 
@@ -263,7 +267,6 @@ app.get<{ Params: { id: string }; Headers: { range?: string } }>("/media/parts/:
 
   reply.code(206);
   reply.header("Content-Range", `bytes ${start}-${end}/${total}`);
-  reply.header("Accept-Ranges", "bytes");
   reply.header("Content-Length", chunkSize);
   reply.header("Content-Type", contentType);
   return reply.send(createReadStream(row.path, { start, end }));

@@ -2,7 +2,6 @@
 
 import { ImageIcon, RefreshCw, X } from "lucide-react";
 import Link from "next/link";
-import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import type { FeedItem } from "@hilihili/shared";
 import { AppShell, EmptyState } from "@/components/AppShell";
@@ -46,13 +45,13 @@ export default function DynamicPage() {
         </div>
       )}
 
-      {preview ? <div className="fixed inset-0 z-50 grid place-items-center bg-black/90 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" onClick={() => setPreview(null)}><button className="absolute right-5 top-5 icon-button" onClick={() => setPreview(null)} aria-label="关闭"><X size={22} /></button>{preview.coverUrl ? <div className="relative h-[86vh] w-[92vw]" onClick={(event) => event.stopPropagation()}><Image src={assetUrl(preview.coverUrl) ?? ""} alt={preview.title} fill unoptimized sizes="92vw" className="rounded-xl object-contain shadow-2xl" /></div> : null}<div className="absolute bottom-5 left-1/2 max-w-[80vw] -translate-x-1/2 rounded-full bg-black/65 px-5 py-2 text-center text-sm">{preview.title}</div></div> : null}
+      {preview ? <div className="fixed inset-0 z-50 grid place-items-center bg-black/90 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" onClick={() => setPreview(null)}><button className="absolute right-5 top-5 icon-button" onClick={() => setPreview(null)} aria-label="关闭"><X size={22} /></button>{preview.coverUrl ? <div className="relative h-[86vh] w-[92vw]" onClick={(event) => event.stopPropagation()}><img src={assetUrl(preview.coverUrl) ?? ""} alt={preview.title} className="h-full w-full rounded-xl object-contain shadow-2xl" /></div> : null}<div className="absolute bottom-5 left-1/2 max-w-[80vw] -translate-x-1/2 rounded-full bg-black/65 px-5 py-2 text-center text-sm">{preview.title}</div></div> : null}
     </AppShell>
   );
 }
 
 function DynamicCard({ item, onPreview }: { item: FeedItem; onPreview: (item: FeedItem) => void }) {
-  const content = <><div className="relative aspect-video overflow-hidden rounded-xl bg-white/5 ring-1 ring-white/8">{item.coverUrl ? <Image src={assetUrl(item.coverUrl) ?? ""} alt="" fill unoptimized sizes="(min-width: 1280px) 20vw, 50vw" className="object-cover transition duration-300 group-hover:scale-[1.03]" /> : <div className="grid h-full place-items-center text-white/30"><ImageIcon /></div>}</div><h3 className="mt-2 line-clamp-2 text-sm font-medium leading-5 group-hover:text-[var(--accent)]">{item.title}</h3><p className="mt-1 truncate text-xs text-white/42">{item.creatorName} · {formatFullDate(item.displayDate)}</p></>;
+  const content = <><div className="relative aspect-video overflow-hidden rounded-xl bg-white/5 ring-1 ring-white/8">{item.coverUrl ? <img src={assetUrl(item.coverUrl) ?? ""} alt="" loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]" /> : <div className="grid h-full place-items-center text-white/30"><ImageIcon /></div>}</div><h3 className="mt-2 line-clamp-2 text-sm font-medium leading-5 group-hover:text-[var(--accent)]">{item.title}</h3><p className="mt-1 truncate text-xs text-white/42">{item.creatorName} · {formatFullDate(item.displayDate)}</p></>;
   return item.kind === "video" ? <Link href={`/watch/${item.id}`} className="group min-w-0">{content}</Link> : <button className="group min-w-0 text-left" onClick={() => onPreview(item)}>{content}</button>;
 }
 
