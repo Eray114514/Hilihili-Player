@@ -1,7 +1,8 @@
 export type SubtitleCue = {
   start: number;
   end: number;
-  text: string;
+  primaryText: string;
+  secondaryText: string;
 };
 
 export function parseSubtitle(content: string): SubtitleCue[] {
@@ -26,10 +27,13 @@ export function parseSubtitle(content: string): SubtitleCue[] {
     const end = parseTime(match[2]);
     if (Number.isNaN(start) || Number.isNaN(end) || end <= start) continue;
 
-    const text = lines.slice(timeIndex + 1).join("\n").replace(/\{[^}]*\}/g, "").trim();
-    if (!text) continue;
+    const textLines = lines.slice(timeIndex + 1).map((line) => line.replace(/\{[^}]*\}/g, "").trim()).filter(Boolean);
+    if (textLines.length === 0) continue;
 
-    cues.push({ start, end, text });
+    const primaryText = textLines[0];
+    const secondaryText = textLines[1] ?? "";
+
+    cues.push({ start, end, primaryText, secondaryText });
   }
 
   return cues;

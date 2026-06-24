@@ -466,12 +466,12 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         >
           {subtitleCues.primary ? (
             <div className="max-w-[90%] rounded bg-black/70 px-3 py-1 text-base font-medium leading-snug text-white shadow-lg [text-shadow:0_1px_2px_rgba(0,0,0,.8)]">
-              {subtitleCues.primary.text}
+              {subtitleCues.primary.primaryText}
             </div>
           ) : null}
-          {subtitleMode === "bilingual" && subtitleCues.secondary ? (
+          {subtitleMode === "bilingual" && (subtitleCues.primary?.secondaryText || subtitleCues.secondary) ? (
             <div className="mt-1.5 max-w-[85%] rounded bg-black/60 px-2 py-0.5 text-xs leading-snug text-white/90 shadow-md [text-shadow:0_1px_2px_rgba(0,0,0,.8)]">
-              {subtitleCues.secondary.text}
+              {subtitleCues.primary?.secondaryText || subtitleCues.secondary?.primaryText}
             </div>
           ) : null}
         </div>
