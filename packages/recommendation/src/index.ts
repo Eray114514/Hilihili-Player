@@ -32,6 +32,8 @@ export type FeedOptions = {
   includeFinished?: boolean;
   kind?: MediaKind;
   excludeId?: string;
+  itemIds?: string[];
+  includeBlacklisted?: boolean;
   mode?: "recommended" | "latest" | "oldest" | "shuffle";
 };
 
@@ -51,6 +53,12 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
   if (options.excludeId) {
     filters.push("mi.id != ?");
     params.push(options.excludeId);
+  }
+  if (options.itemIds) {
+    if (options.itemIds.length === 0) return [];
+    const ids = options.itemIds.slice(0, 80);
+    filters.push(`mi.id IN (${ids.map(() => "?").join(", ")})`);
+    params.push(...ids);
   }
   if (!options.includeFinished) {
     filters.push("COALESCE(wp.finished, 0) = 0");
@@ -91,7 +99,7 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
     WHERE ${filters.join(" AND ")}
   `).all(...params) as CandidateRow[];
 
-  const candidates = rows.filter((row) => row.creator_blacklisted === 0);
+  const candidates = options.includeBlacklisted ? rows : rows.filter((row) => row.creator_blacklisted === 0);
   const scored = candidates.map((row) => ({
     row,
     score: scoreCandidate(db, row, options.seed)
@@ -107,6 +115,24 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
         : scored.sort((a, b) => b.score - a.score);
 
   return sorted.slice(0, limit).map(({ row, score }) => toFeedItem(db, row, score));
+}
+
+export function getFeedItemsByIds(ids: string[]): FeedItem[] {
+  const uniqueIds = [...new Set(ids)].slice(0, 80);
+  if (uniqueIds.length === 0) return [];
+  const items = getRecommendedFeed({
+    itemIds: uniqueIds,
+    limit: uniqueIds.length,
+    includeImages: true,
+    includeFinished: true,
+    includeBlacklisted: true,
+    mode: "latest"
+  });
+  const byId = new Map(items.map((item) => [item.id, item]));
+  return uniqueIds.flatMap((id) => {
+    const item = byId.get(id);
+    return item ? [item] : [];
+  });
 }
 
 function scoreCandidate(db: ReturnType<typeof getSqlite>, row: CandidateRow, seed = "home") {

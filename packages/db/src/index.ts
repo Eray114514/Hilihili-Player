@@ -124,6 +124,8 @@ function migrate(db: Database.Database) {
       part_id TEXT REFERENCES media_parts(id),
       position_seconds REAL NOT NULL DEFAULT 0,
       finished INTEGER NOT NULL DEFAULT 0,
+      started_at TEXT NOT NULL DEFAULT '',
+      completed_at TEXT,
       updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS comments (
@@ -181,7 +183,28 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "media_parts", "compatibility_status", "TEXT NOT NULL DEFAULT 'pending'");
   ensureColumn(db, "media_parts", "compatibility_error", "TEXT");
   ensureColumn(db, "creators", "alias", "TEXT");
+  ensureColumn(db, "watch_progress", "started_at", "TEXT");
+  ensureColumn(db, "watch_progress", "completed_at", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS media_items_library_relative_idx ON media_items(library_id, relative_path)");
+
+  db.exec(`
+    UPDATE watch_progress SET started_at = updated_at WHERE started_at IS NULL;
+    UPDATE watch_progress
+    SET finished = CASE WHEN EXISTS (
+      SELECT 1
+      FROM media_parts current_part
+      WHERE current_part.id = watch_progress.part_id
+        AND current_part.item_id = watch_progress.item_id
+        AND current_part.part_index = (
+          SELECT MAX(last_part.part_index) FROM media_parts last_part
+          WHERE last_part.item_id = watch_progress.item_id
+        )
+        AND current_part.duration_seconds > 0
+        AND watch_progress.position_seconds >= current_part.duration_seconds * 0.9
+    ) THEN 1 ELSE 0 END;
+    UPDATE watch_progress
+    SET completed_at = CASE WHEN finished = 1 THEN COALESCE(completed_at, updated_at) ELSE NULL END;
+  `);
 
   db.exec(`
     UPDATE media_items SET title = trim(substr(title, length('[未知]') + 1))

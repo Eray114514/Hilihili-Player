@@ -61,11 +61,41 @@ export async function putJson<T>(path: string, body: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export async function deleteJson<T>(path: string): Promise<T> {
+  const response = await fetch(apiUrl(path), { method: "DELETE" });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<T>;
+}
+
 export type FeedResponse = { items: FeedItem[] };
 export type LibrariesResponse = { libraries: Library[] };
 export type FsRootsResponse = { roots: DirectoryEntry[] };
 export type FsListResponse = { path: string; parent: string | null; entries: DirectoryEntry[] };
 export type ScanRunsResponse = { runs: ScanRun[] };
+export type ActivityEntry = {
+  item: FeedItem;
+  resumePartId: string | null;
+  resumePartIndex: number | null;
+  resumePartTitle: string | null;
+  positionSeconds: number;
+  durationSeconds: number | null;
+  progressPercent: number;
+  finished: boolean;
+  liked: boolean;
+  startedAt: string | null;
+  completedAt: string | null;
+  updatedAt: string | null;
+  likedAt: string | null;
+};
+export type ActivityResponse = {
+  history: ActivityEntry[];
+  continueWatching: ActivityEntry[];
+  completed: ActivityEntry[];
+  recentLikes: ActivityEntry[];
+  stats: { history: number; completed: number; likes: number };
+};
 export type Category = { id: string; name: string; itemCount: number };
 export type Creator = { id: string; name: string; alias: string | null; categoryName: string; itemCount: number };
 

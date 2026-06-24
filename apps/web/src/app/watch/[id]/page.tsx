@@ -66,6 +66,7 @@ export default function WatchPage() {
               itemId={detail.item.id}
               part={activePart}
               resumePosition={activePart?.id === detail.item.resumePartId ? detail.item.resumePositionSeconds ?? 0 : 0}
+              isLastPart={activePartIndex === detail.parts.length - 1}
               onEnded={() => { if (activePartIndex < detail.parts.length - 1) setActivePartIndex((value) => value + 1); }}
             />
 

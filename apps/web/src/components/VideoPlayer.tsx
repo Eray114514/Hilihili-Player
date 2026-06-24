@@ -9,12 +9,13 @@ type VideoPlayerProps = {
   itemId: string;
   part: PartDetail | undefined;
   resumePosition?: number;
+  isLastPart?: boolean;
   onEnded?: () => void;
 };
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 
-export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: VideoPlayerProps) {
+export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = false, onEnded }: VideoPlayerProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
@@ -24,6 +25,9 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
   const holdingFastRef = useRef(false);
   const resumedPartRef = useRef<string | null>(null);
   const stallStartRef = useRef<number>(0);
+  const latestProgressRef = useRef<{ partId: string; positionSeconds: number; durationSeconds: number } | null>(null);
+  const lastSavedRef = useRef<{ partId: string; positionSeconds: number } | null>(null);
+  const completionSentRef = useRef<string | null>(null);
 
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -126,6 +130,20 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
     });
   }, []);
 
+  const saveProgress = useCallback((force = false) => {
+    const progress = latestProgressRef.current;
+    if (!progress || progress.positionSeconds <= 0) return;
+    const lastSaved = lastSavedRef.current;
+    if (!force && lastSaved?.partId === progress.partId && Math.abs(lastSaved.positionSeconds - progress.positionSeconds) < 2) return;
+    lastSavedRef.current = { partId: progress.partId, positionSeconds: progress.positionSeconds };
+    void fetch(apiUrl(`/items/${itemId}/interactions`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "watch", ...progress }),
+      keepalive: true
+    }).catch(() => undefined);
+  }, [itemId]);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -147,18 +165,25 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
 
   useEffect(() => {
     if (!part) return;
+    completionSentRef.current = null;
+    latestProgressRef.current = { partId: part.id, positionSeconds: 0, durationSeconds: part.durationSeconds ?? 0 };
     const timer = window.setInterval(() => {
       const video = videoRef.current;
       if (video && !video.paused && video.currentTime > 0) {
-        void postJson(`/items/${itemId}/interactions`, {
-          kind: "watch",
-          partId: part.id,
-          positionSeconds: video.currentTime
-        });
+        saveProgress();
       }
-    }, 15000);
-    return () => window.clearInterval(timer);
-  }, [itemId, part]);
+    }, 10000);
+    const handlePageHide = () => saveProgress(true);
+    const handleVisibilityChange = () => { if (document.visibilityState === "hidden") saveProgress(true); };
+    window.addEventListener("pagehide", handlePageHide);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("pagehide", handlePageHide);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      saveProgress(true);
+    };
+  }, [part, saveProgress]);
 
   useEffect(() => () => {
     if (holdTimerRef.current) window.clearTimeout(holdTimerRef.current);
@@ -187,7 +212,8 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
     void postJson(`/items/${itemId}/interactions`, {
       kind: "finish",
       partId,
-      positionSeconds: duration
+      positionSeconds: duration,
+      durationSeconds: duration
     });
     onEnded?.();
   }
@@ -292,7 +318,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
           autoPlay
           preload="auto"
           onPlay={() => { setPlaying(true); setBuffering(false); stallStartRef.current = 0; }}
-          onPause={() => setPlaying(false)}
+          onPause={() => { setPlaying(false); saveProgress(true); }}
           onWaiting={() => {
             setBuffering(true);
             if (!stallStartRef.current) stallStartRef.current = Date.now();
@@ -303,6 +329,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
             const video = event.currentTarget;
             const dur = video.duration || 0;
             setDuration(dur);
+            latestProgressRef.current = { partId, positionSeconds: video.currentTime, durationSeconds: dur };
             if (resumedPartRef.current !== partId && resumePosition > 0 && resumePosition < dur - 3) {
               video.currentTime = resumePosition;
               setCurrent(resumePosition);
@@ -310,7 +337,15 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
             }
             void video.play().catch(() => setAutoPlayBlocked(true));
           }}
-          onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
+          onTimeUpdate={(event) => {
+            const video = event.currentTarget;
+            setCurrent(video.currentTime);
+            latestProgressRef.current = { partId, positionSeconds: video.currentTime, durationSeconds: video.duration || duration };
+            if (isLastPart && video.duration > 0 && video.currentTime >= video.duration * 0.9 && completionSentRef.current !== partId) {
+              completionSentRef.current = partId;
+              saveProgress(true);
+            }
+          }}
           onVolumeChange={(event) => {
             const v = event.currentTarget;
             setVolume(v.muted ? 0 : v.volume);

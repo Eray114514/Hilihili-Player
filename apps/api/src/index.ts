@@ -6,7 +6,7 @@ import { platform } from "node:os";
 import { lookup } from "mime-types";
 import { createId, getSqlite, nowIso } from "@hilihili/db";
 import { enqueueScan } from "@hilihili/media";
-import { getRecommendedFeed } from "@hilihili/recommendation";
+import { getFeedItemsByIds, getRecommendedFeed } from "@hilihili/recommendation";
 import type { DirectoryEntry, InteractionKind } from "@hilihili/shared";
 
 type AddLibraryBody = {
@@ -18,7 +18,22 @@ type InteractionBody = {
   kind?: InteractionKind;
   value?: number;
   positionSeconds?: number;
+  durationSeconds?: number;
   partId?: string;
+};
+
+type ActivityRow = {
+  itemId: string;
+  resumePartId: string | null;
+  resumePartIndex: number | null;
+  resumePartTitle: string | null;
+  positionSeconds: number;
+  durationSeconds: number | null;
+  finished: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  updatedAt: string | null;
+  likedAt: string | null;
 };
 
 type CommentBody = {
@@ -115,6 +130,74 @@ app.get<{ Querystring: { seed?: string; limit?: string } }>("/feeds/home", async
     mode: "recommended"
   })
 }));
+
+app.get<{ Querystring: { limit?: string } }>("/me/activity", async (request) => {
+  const limit = Math.min(Math.max(Number(request.query.limit ?? 60), 1), 80);
+  const historyRows = db.prepare(`
+    SELECT wp.item_id AS itemId, wp.part_id AS resumePartId,
+      mp.part_index AS resumePartIndex, mp.title AS resumePartTitle,
+      wp.position_seconds AS positionSeconds, mp.duration_seconds AS durationSeconds,
+      wp.finished, wp.started_at AS startedAt, wp.completed_at AS completedAt,
+      wp.updated_at AS updatedAt, ip.updated_at AS likedAt
+    FROM watch_progress wp
+    JOIN media_items mi ON mi.id = wp.item_id AND mi.hidden = 0
+    LEFT JOIN media_parts mp ON mp.id = wp.part_id
+    LEFT JOIN item_preferences ip ON ip.item_id = wp.item_id AND ip.reaction = 'like'
+    ORDER BY wp.updated_at DESC
+    LIMIT ?
+  `).all(limit) as ActivityRow[];
+  const likedRows = db.prepare(`
+    SELECT ip.item_id AS itemId, wp.part_id AS resumePartId,
+      mp.part_index AS resumePartIndex, mp.title AS resumePartTitle,
+      COALESCE(wp.position_seconds, 0) AS positionSeconds, mp.duration_seconds AS durationSeconds,
+      COALESCE(wp.finished, 0) AS finished, wp.started_at AS startedAt,
+      wp.completed_at AS completedAt, wp.updated_at AS updatedAt, ip.updated_at AS likedAt
+    FROM item_preferences ip
+    JOIN media_items mi ON mi.id = ip.item_id AND mi.hidden = 0
+    LEFT JOIN watch_progress wp ON wp.item_id = ip.item_id
+    LEFT JOIN media_parts mp ON mp.id = wp.part_id
+    WHERE ip.reaction = 'like'
+    ORDER BY ip.updated_at DESC
+    LIMIT ?
+  `).all(limit) as ActivityRow[];
+  const feedItems = getFeedItemsByIds([...historyRows, ...likedRows].map((row) => row.itemId));
+  const itemsById = new Map(feedItems.map((item) => [item.id, item]));
+  const toEntry = (row: ActivityRow) => {
+    const item = itemsById.get(row.itemId);
+    if (!item) return null;
+    const progressPercent = row.durationSeconds && row.durationSeconds > 0
+      ? Math.min(100, Math.round((row.positionSeconds / row.durationSeconds) * 100))
+      : 0;
+    return {
+      item,
+      resumePartId: row.resumePartId,
+      resumePartIndex: row.resumePartIndex,
+      resumePartTitle: row.resumePartTitle,
+      positionSeconds: row.positionSeconds,
+      durationSeconds: row.durationSeconds,
+      progressPercent,
+      finished: Boolean(row.finished),
+      liked: Boolean(row.likedAt),
+      startedAt: row.startedAt,
+      completedAt: row.completedAt,
+      updatedAt: row.updatedAt,
+      likedAt: row.likedAt
+    };
+  };
+  const history = historyRows.map(toEntry).filter((entry) => entry !== null);
+  const recentLikes = likedRows.map(toEntry).filter((entry) => entry !== null);
+  return {
+    history,
+    continueWatching: history.filter((entry) => !entry.finished && entry.positionSeconds > 0),
+    completed: history.filter((entry) => entry.finished),
+    recentLikes,
+    stats: {
+      history: (db.prepare("SELECT COUNT(*) AS count FROM watch_progress").get() as { count: number }).count,
+      completed: (db.prepare("SELECT COUNT(*) AS count FROM watch_progress WHERE finished = 1").get() as { count: number }).count,
+      likes: (db.prepare("SELECT COUNT(*) AS count FROM item_preferences WHERE reaction = 'like'").get() as { count: number }).count
+    }
+  };
+});
 
 app.get<{ Querystring: { seed?: string; limit?: string; sort?: string; kind?: string } }>("/feeds/dynamic", async (request) => ({
   items: getRecommendedFeed({
@@ -339,15 +422,38 @@ app.post<{ Params: { id: string }; Body: InteractionBody }>("/items/:id/interact
 
   const value = request.body.value ?? 1;
   if (request.body.kind === "finish" || request.body.kind === "watch") {
+    const part = request.body.partId ? db.prepare(`
+      SELECT mp.id, mp.part_index AS partIndex, mp.duration_seconds AS durationSeconds,
+        (SELECT MAX(last_part.part_index) FROM media_parts last_part WHERE last_part.item_id = mp.item_id) AS lastPartIndex
+      FROM media_parts mp WHERE mp.id = ? AND mp.item_id = ?
+    `).get(request.body.partId, request.params.id) as
+      | { id: string; partIndex: number; durationSeconds: number | null; lastPartIndex: number }
+      | undefined : undefined;
+    if (!part) return reply.code(400).send({ error: "Invalid media part" });
+    const positionSeconds = Math.max(0, Number(request.body.positionSeconds ?? 0));
+    const reportedDuration = Number(request.body.durationSeconds ?? 0);
+    const durationSeconds = part.durationSeconds && part.durationSeconds > 0 ? part.durationSeconds : reportedDuration;
+    const finished = part.partIndex === part.lastPartIndex
+      && durationSeconds > 0
+      && positionSeconds >= durationSeconds * 0.9;
+    const timestamp = nowIso();
+    if ((!part.durationSeconds || part.durationSeconds <= 0) && reportedDuration > 0) {
+      db.prepare("UPDATE media_parts SET duration_seconds = ? WHERE id = ?").run(reportedDuration, part.id);
+    }
     db.prepare(`
-      INSERT INTO watch_progress (item_id, part_id, position_seconds, finished, updated_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO watch_progress (item_id, part_id, position_seconds, finished, started_at, completed_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(item_id) DO UPDATE SET
         part_id = excluded.part_id,
         position_seconds = excluded.position_seconds,
         finished = MAX(watch_progress.finished, excluded.finished),
+        completed_at = CASE
+          WHEN watch_progress.finished = 1 THEN watch_progress.completed_at
+          WHEN excluded.finished = 1 THEN excluded.completed_at
+          ELSE NULL
+        END,
         updated_at = excluded.updated_at
-    `).run(request.params.id, request.body.partId ?? null, request.body.positionSeconds ?? 0, request.body.kind === "finish" ? 1 : 0, nowIso());
+    `).run(request.params.id, part.id, positionSeconds, finished ? 1 : 0, timestamp, finished ? timestamp : null, timestamp);
   }
 
   if (request.body.kind === "blacklist_up" && item.creator_id) {

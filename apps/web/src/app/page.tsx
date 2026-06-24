@@ -1,28 +1,32 @@
 "use client";
 
-import { RefreshCw } from "lucide-react";
+import { Heart, Play, RefreshCw } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AppShell, EmptyState } from "@/components/AppShell";
 import { VideoGrid } from "@/components/VideoCard";
-import { getJson, type Category, type FeedResponse } from "@/lib/api";
+import { getJson, type ActivityResponse, type Category, type FeedResponse } from "@/lib/api";
 
 export default function HomePage() {
   const [seed, setSeed] = useState("home");
   const [items, setItems] = useState<FeedResponse["items"]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [activity, setActivity] = useState<ActivityResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let ignore = false;
     async function load() {
       setLoading(true);
-      const [feed, categoryData] = await Promise.all([
+      const [feed, categoryData, activityData] = await Promise.all([
         getJson<FeedResponse>(`/feeds/home?seed=${seed}&limit=30`),
-        getJson<{ categories: Category[] }>("/categories")
+        getJson<{ categories: Category[] }>("/categories"),
+        getJson<ActivityResponse>("/me/activity?limit=12")
       ]);
       if (!ignore) {
         setItems(feed.items);
         setCategories(categoryData.categories);
+        setActivity(activityData);
         setLoading(false);
       }
     }
@@ -31,6 +35,8 @@ export default function HomePage() {
       ignore = true;
     };
   }, [seed]);
+
+  const likedReminder = activity?.continueWatching.find((entry) => entry.liked);
 
   return (
     <AppShell>
@@ -43,6 +49,14 @@ export default function HomePage() {
           <RefreshCw size={17} /> 换一换
         </button>
       </section>
+
+      {likedReminder ? (
+        <section className="mb-6 flex flex-col gap-4 rounded-xl border border-rose-300/15 bg-[linear-gradient(120deg,rgba(244,114,182,.09),rgba(94,234,212,.055))] p-4 sm:flex-row sm:items-center">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-rose-300/12 text-rose-300"><Heart size={19} fill="currentColor" /></span>
+          <div className="min-w-0 flex-1"><p className="text-xs text-rose-200/65">你喜欢的视频还没看完</p><h2 className="mt-1 truncate font-medium">{likedReminder.item.title}</h2><p className="mt-1 text-xs text-white/42">看到 P{likedReminder.resumePartIndex ?? 1} · {likedReminder.progressPercent}%</p></div>
+          <Link href={`/watch/${likedReminder.item.id}`} className="primary-button shrink-0 justify-center"><Play size={15} />继续观看</Link>
+        </section>
+      ) : null}
 
       {loading ? <HomeSkeleton /> : items.length === 0 ? (
         <EmptyState title="还没有视频" body="去设置里添加一个本机或 NAS 挂载目录，然后扫描媒体库。" />

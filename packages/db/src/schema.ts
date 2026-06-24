@@ -151,6 +151,8 @@ export const watchProgress = sqliteTable("watch_progress", {
   partId: text("part_id").references(() => mediaParts.id),
   positionSeconds: real("position_seconds").notNull().default(0),
   finished: integer("finished", { mode: "boolean" }).notNull().default(false),
+  startedAt: text("started_at").notNull().default(""),
+  completedAt: text("completed_at"),
   updatedAt: text("updated_at").notNull()
 });
 
