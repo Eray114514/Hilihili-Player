@@ -1,0 +1,11 @@
+{
+  "name": "@hilihili/backend-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@hilihili/api": "workspace:*",
+    "@hilihili/worker": "workspace:*",
+    "tsx": "^4.21.0"
+  }
+}

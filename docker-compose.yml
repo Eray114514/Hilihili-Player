@@ -1,7 +1,7 @@
 services:
   api:
-    image: ghcr.io/eray114514/hilihili-player:latest
-    command: pnpm --filter @hilihili/api start
+    image: ghcr.io/eray114514/hilihili-player:backend
+    command: node --import tsx node_modules/@hilihili/api/src/index.ts
     environment:
       HILI_API_HOST: 0.0.0.0
       HILI_API_PORT: 4141
@@ -16,8 +16,8 @@ services:
     restart: unless-stopped
 
   worker:
-    image: ghcr.io/eray114514/hilihili-player:latest
-    command: pnpm --filter @hilihili/worker start
+    image: ghcr.io/eray114514/hilihili-player:backend
+    command: node --import tsx node_modules/@hilihili/worker/src/index.ts
     environment:
       HILI_DATA_DIR: /data
       HILI_SCAN_INTERVAL_MS: 900000
@@ -30,8 +30,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: ghcr.io/eray114514/hilihili-player:latest
-    command: pnpm --filter @hilihili/web start
+    image: ghcr.io/eray114514/hilihili-player:web
     environment:
       API_BASE_URL: http://api:4141
     ports:
