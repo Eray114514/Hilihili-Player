@@ -76,7 +76,13 @@ export const mediaParts = sqliteTable(
     path: text("path").notNull(),
     sizeBytes: integer("size_bytes").notNull(),
     durationSeconds: real("duration_seconds"),
-    fingerprint: text("fingerprint").notNull()
+    fingerprint: text("fingerprint").notNull(),
+    previewSpritePath: text("preview_sprite_path"),
+    previewSpriteCols: integer("preview_sprite_cols"),
+    previewSpriteRows: integer("preview_sprite_rows"),
+    previewSpriteInterval: real("preview_sprite_interval"),
+    previewThumbW: integer("preview_thumb_w"),
+    previewThumbH: integer("preview_thumb_h")
   },
   (table) => ({
     byItem: index("media_parts_item_idx").on(table.itemId),
