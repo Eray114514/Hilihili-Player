@@ -5,6 +5,39 @@ export type SubtitleCue = {
   secondaryText: string;
 };
 
+export function decodeSubtitle(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length >= 2) {
+    if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+      return new TextDecoder("utf-16le").decode(bytes);
+    }
+    if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+      return new TextDecoder("utf-16be").decode(bytes);
+    }
+
+    const sampleLength = Math.min(bytes.length, 200);
+    let evenZeros = 0;
+    let oddZeros = 0;
+    for (let index = 0; index < sampleLength; index += 1) {
+      if (bytes[index] !== 0) continue;
+      if (index % 2 === 0) evenZeros += 1;
+      else oddZeros += 1;
+    }
+    if (oddZeros > sampleLength / 8) return new TextDecoder("utf-16le").decode(bytes);
+    if (evenZeros > sampleLength / 8) return new TextDecoder("utf-16be").decode(bytes);
+  }
+
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    try {
+      return new TextDecoder("gb18030").decode(bytes);
+    } catch {
+      return new TextDecoder().decode(bytes);
+    }
+  }
+}
+
 export function parseSubtitle(content: string): SubtitleCue[] {
   const cleaned = content.trim().replace(/^\uFEFF/, "");
   const isVtt = cleaned.startsWith("WEBVTT");

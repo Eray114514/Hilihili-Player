@@ -4,7 +4,7 @@ import { AlertTriangle, FastForward, LoaderCircle, Maximize, Minimize, Pause, Pl
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiUrl, assetUrl, postJson } from "@/lib/api";
 import type { PartDetail } from "@/lib/api";
-import { findActiveCue, parseSubtitle, type SubtitleCue } from "@/lib/subtitles";
+import { decodeSubtitle, findActiveCue, parseSubtitle, type SubtitleCue } from "@/lib/subtitles";
 
 type VideoPlayerProps = {
   itemId: string;
@@ -60,7 +60,19 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const [subtitleCues, setSubtitleCues] = useState<{ primary: SubtitleCue | null; secondary: SubtitleCue | null }>({ primary: null, secondary: null });
 
   const hasSubtitles = part && part.subtitles.length > 0;
-  const secondaryLanguage = useMemo(() => part?.subtitles.find((track) => track.language !== "zh")?.language ?? null, [part]);
+  const primarySubtitle = useMemo(() => {
+    if (!part) return null;
+    return part.subtitles.find((track) => track.isDefault)
+      ?? part.subtitles.find((track) => track.language === "zh")
+      ?? part.subtitles[0]
+      ?? null;
+  }, [part]);
+  const secondarySubtitle = useMemo(() => {
+    if (!part || !primarySubtitle) return null;
+    return part.subtitles.find((track) => track.id !== primarySubtitle.id && track.language !== primarySubtitle.language)
+      ?? part.subtitles.find((track) => track.id !== primarySubtitle.id)
+      ?? null;
+  }, [part, primarySubtitle]);
   const showSubtitles = !!hasSubtitles && subtitlesEnabled;
 
   const spriteUrl = useMemo(() => {
@@ -93,7 +105,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     setSubtitleTracks(new Map());
     setSubtitleCues({ primary: null, secondary: null });
     setSubtitlesEnabled(part.subtitles.length > 0);
-    setSubtitleMode(secondaryLanguage ? "bilingual" : "chinese");
+    setSubtitleMode("bilingual");
   }
 
   const updateSubtitleCues = useCallback(() => {
@@ -101,10 +113,10 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     if (!video) return;
     const time = video.currentTime;
     setSubtitleCues({
-      primary: findActiveCue(subtitleTracks.get("zh") ?? [], time),
-      secondary: secondaryLanguage ? findActiveCue(subtitleTracks.get(secondaryLanguage) ?? [], time) : null
+      primary: primarySubtitle ? findActiveCue(subtitleTracks.get(primarySubtitle.id) ?? [], time) : null,
+      secondary: secondarySubtitle ? findActiveCue(subtitleTracks.get(secondarySubtitle.id) ?? [], time) : null
     });
-  }, [subtitleTracks, secondaryLanguage]);
+  }, [subtitleTracks, primarySubtitle, secondarySubtitle]);
 
   useEffect(() => {
     if (!part || part.subtitles.length === 0) return;
@@ -118,9 +130,9 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         try {
           const response = await fetch(url);
           if (!response.ok) continue;
-          const text = await response.text();
+          const text = decodeSubtitle(await response.arrayBuffer());
           const cues = parseSubtitle(text);
-          map.set(track.language, cues);
+          map.set(track.id, cues);
         } catch {
           console.warn(`[player] failed to load subtitle: ${url}`);
         }
@@ -130,15 +142,15 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         const video = videoRef.current;
         if (video) {
           setSubtitleCues({
-            primary: findActiveCue(map.get("zh") ?? [], video.currentTime),
-            secondary: secondaryLanguage ? findActiveCue(map.get(secondaryLanguage) ?? [], video.currentTime) : null
+            primary: primarySubtitle ? findActiveCue(map.get(primarySubtitle.id) ?? [], video.currentTime) : null,
+            secondary: secondarySubtitle ? findActiveCue(map.get(secondarySubtitle.id) ?? [], video.currentTime) : null
           });
         }
       }
     };
     void load();
     return () => { ignore = true; };
-  }, [part, secondaryLanguage]);
+  }, [part, primarySubtitle, secondarySubtitle]);
 
   const showControls = useCallback(() => {
     setControlsVisible(true);
