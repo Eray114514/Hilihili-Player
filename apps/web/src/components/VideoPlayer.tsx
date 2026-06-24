@@ -18,12 +18,14 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
   const shellRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
+  const speedBtnRef = useRef<HTMLButtonElement>(null);
   const holdTimerRef = useRef<number | null>(null);
   const hideTimerRef = useRef<number | null>(null);
   const clickTimerRef = useRef<number | null>(null);
   const holdingFastRef = useRef(false);
   const resumedPartRef = useRef<string | null>(null);
   const stallStartRef = useRef<number>(0);
+  const isDraggingRef = useRef(false);
 
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -44,6 +46,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
   const [spriteLoaded, setSpriteLoaded] = useState(false);
   const [prevPartId, setPrevPartId] = useState<string | null>(null);
   const [mediaError, setMediaError] = useState(false);
+  const [progressHover, setProgressHover] = useState(false);
 
   const spriteUrl = useMemo(() => {
     if (!part?.previewSpritePath) return null;
@@ -72,13 +75,14 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
     setHoverTime(null);
     setSpriteLoaded(false);
     setMediaError(false);
+    setProgressHover(false);
   }
 
   const showControls = useCallback(() => {
     setControlsVisible(true);
     if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
     hideTimerRef.current = window.setTimeout(() => {
-      if (!speedMenuOpen) setControlsVisible(false);
+      if (!speedMenuOpen && !isDraggingRef.current) setControlsVisible(false);
     }, 2600);
   }, [speedMenuOpen]);
 
@@ -90,7 +94,8 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
     } else {
       video.pause();
     }
-  }, []);
+    showControls();
+  }, [showControls]);
 
   const toggleFullscreen = useCallback(() => {
     if (!shellRef.current) return;
@@ -104,11 +109,13 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
   const seekBy = useCallback((delta: number) => {
     const video = videoRef.current;
     if (!video) return;
-    const next = Math.max(0, Math.min(duration || video.duration || 0, video.currentTime + delta));
+    const dur = duration || video.duration || 0;
+    const next = Math.max(0, Math.min(dur, video.currentTime + delta));
     setBuffering(true);
     video.currentTime = next;
     setCurrent(next);
-  }, [duration]);
+    showControls();
+  }, [duration, showControls]);
 
   const seekTo = useCallback((value: number) => {
     const video = videoRef.current;
@@ -124,7 +131,8 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
       const nextIdx = Math.max(0, Math.min(SPEEDS.length - 1, idx + direction));
       return SPEEDS[nextIdx];
     });
-  }, []);
+    showControls();
+  }, [showControls]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -146,6 +154,18 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
   }, []);
 
   useEffect(() => {
+    const btn = speedBtnRef.current;
+    if (!btn) return;
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      cycleSpeed(event.deltaY > 0 ? 1 : -1);
+    };
+    btn.addEventListener("wheel", handleWheel, { passive: false });
+    return () => btn.removeEventListener("wheel", handleWheel as EventListener);
+  }, [cycleSpeed]);
+
+  useEffect(() => {
     if (!part) return;
     const timer = window.setInterval(() => {
       const video = videoRef.current;
@@ -159,6 +179,62 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
     }, 15000);
     return () => window.clearInterval(timer);
   }, [itemId, part]);
+
+  useEffect(() => {
+    const handleGlobalKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return;
+      }
+      if (!shellRef.current) return;
+      const rect = shellRef.current.getBoundingClientRect();
+      const inView = rect.bottom > 0 && rect.top < window.innerHeight;
+      if (!inView) return;
+
+      const key = event.key.toLowerCase();
+      const code = event.code;
+
+      if (code === "Space" || key === "k") {
+        event.preventDefault();
+        const video = videoRef.current;
+        if (!video) return;
+        if (video.paused) {
+          void video.play().then(() => setAutoPlayBlocked(false)).catch(() => setAutoPlayBlocked(true));
+        } else {
+          video.pause();
+        }
+      } else if (key === "j") {
+        event.preventDefault();
+        seekBy(-10);
+      } else if (key === "l") {
+        event.preventDefault();
+        seekBy(10);
+      } else if (key === "arrowleft") {
+        event.preventDefault();
+        seekBy(-5);
+      } else if (key === "arrowright") {
+        event.preventDefault();
+        seekBy(5);
+      } else if (key === "f") {
+        event.preventDefault();
+        toggleFullscreen();
+      } else if (key === "m") {
+        event.preventDefault();
+        setMuted((v) => !v);
+        showControls();
+      } else if (key === "arrowup") {
+        event.preventDefault();
+        setVolume((v) => Math.min(1, v + 0.1));
+        showControls();
+      } else if (key === "arrowdown") {
+        event.preventDefault();
+        setVolume((v) => Math.max(0, v - 0.1));
+        showControls();
+      }
+    };
+    window.addEventListener("keydown", handleGlobalKey);
+    return () => window.removeEventListener("keydown", handleGlobalKey);
+  }, [togglePlay, seekBy, toggleFullscreen, showControls]);
 
   useEffect(() => () => {
     if (holdTimerRef.current) window.clearTimeout(holdTimerRef.current);
@@ -192,29 +268,64 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
     onEnded?.();
   }
 
-  function handleProgressHover(event: React.PointerEvent<HTMLDivElement>) {
+  function computeHover(event: PointerEvent | React.PointerEvent<HTMLDivElement>) {
     const bar = progressRef.current;
-    if (!bar || !duration) return;
+    if (!bar || !duration) return null;
     const rect = bar.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    const pad = 12;
+    const innerW = rect.width - pad * 2;
+    const x = Math.max(pad, Math.min(rect.width - pad, event.clientX - rect.left)) - pad;
+    const ratio = x / innerW;
     const time = ratio * duration;
+    return { ratio, time, rect, innerX: x, innerW };
+  }
+
+  function handleProgressPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const result = computeHover(event);
+    if (!result) return;
+    const { ratio, time, innerX, innerW } = result;
     setHoverTime(time);
     setHoverRatio(ratio);
     const halfW = spriteInfo ? spriteInfo.thumbW / 2 : 40;
-    const rawPx = ratio * rect.width;
-    setHoverLeftPx(Math.max(halfW, Math.min(rect.width - halfW, rawPx)));
+    setHoverLeftPx(Math.max(halfW, Math.min(innerW - halfW, innerX)));
+    showControls();
   }
 
-  function handleProgressLeave() {
+  function handleProgressPointerEnter() {
+    setProgressHover(true);
+  }
+
+  function handleProgressPointerLeave() {
     setHoverTime(null);
+    setProgressHover(false);
   }
 
-  function handleProgressClick(event: React.PointerEvent<HTMLDivElement>) {
+  function handleProgressPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
     const bar = progressRef.current;
     if (!bar || !duration) return;
-    const rect = bar.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    seekTo(ratio * duration);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    isDraggingRef.current = true;
+    const result = computeHover(event);
+    if (result) seekTo(result.time);
+    showControls();
+  }
+
+  function handleProgressPointerMoveDrag(event: React.PointerEvent<HTMLDivElement>) {
+    if (!isDraggingRef.current) return;
+    const result = computeHover(event);
+    if (result) {
+      setHoverTime(result.time);
+      setHoverRatio(result.ratio);
+      const halfW = spriteInfo ? spriteInfo.thumbW / 2 : 40;
+      setHoverLeftPx(Math.max(halfW, Math.min(result.innerW - halfW, result.innerX)));
+      seekTo(result.time);
+    }
+    showControls();
+  }
+
+  function handleProgressPointerUp() {
+    isDraggingRef.current = false;
   }
 
   const hoverTileIndex = hoverTime != null && spriteInfo
@@ -235,6 +346,9 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
   const bufferedPct = duration > 0 ? (buffered / duration) * 100 : 0;
   const hoverPct = hoverRatio * 100;
 
+  const showFullControls = controlsVisible || speedMenuOpen;
+  const barThick = progressHover || showFullControls;
+
   return (
     <section
       ref={shellRef}
@@ -242,17 +356,11 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
       className="group relative aspect-video overflow-hidden rounded-xl bg-black shadow-2xl shadow-black/30 outline-none ring-1 ring-white/10"
       onMouseMove={showControls}
       onFocus={showControls}
-      onKeyDown={(event) => {
-        if (event.code === "Space") { event.preventDefault(); togglePlay(); }
-        if (event.key.toLowerCase() === "k") { event.preventDefault(); togglePlay(); }
-        if (event.key.toLowerCase() === "j") { event.preventDefault(); seekBy(-10); }
-        if (event.key.toLowerCase() === "l") { event.preventDefault(); seekBy(10); }
-        if (event.key === "ArrowLeft") { event.preventDefault(); seekBy(-5); }
-        if (event.key === "ArrowRight") { event.preventDefault(); seekBy(5); }
-        if (event.key.toLowerCase() === "f") { event.preventDefault(); toggleFullscreen(); }
-        if (event.key.toLowerCase() === "m") { event.preventDefault(); setMuted((v) => !v); }
-        if (event.key === "ArrowUp") { event.preventDefault(); setVolume((v) => Math.min(1, v + 0.1)); }
-        if (event.key === "ArrowDown") { event.preventDefault(); setVolume((v) => Math.max(0, v - 0.1)); }
+      onPointerLeave={() => {
+        if (!speedMenuOpen) {
+          if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
+          setControlsVisible(false);
+        }
       }}
     >
       <div
@@ -338,50 +446,50 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
         </div>
       ) : null}
       {holdingFast ? <div className="pointer-events-none absolute left-1/2 top-5 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-sm font-semibold">3× 快进中</div> : null}
-      {autoPlayBlocked || (!playing && !buffering) ? (
+      {autoPlayBlocked || (!playing && !buffering && !mediaError) ? (
         <button className="absolute left-1/2 top-1/2 grid h-16 w-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-white/92 text-black shadow-xl transition hover:scale-105" onClick={togglePlay} aria-label="播放">
           <Play className="ml-1" size={28} fill="currentColor" />
         </button>
       ) : null}
 
       <div
-        className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent px-3 pb-2 pt-12 transition-opacity duration-200 ${controlsVisible ? "opacity-100" : "pointer-events-none opacity-0"}`}
-        onPointerDown={(event) => event.stopPropagation()}
-        onPointerUp={(event) => event.stopPropagation()}
-        onMouseMove={(event) => event.stopPropagation()}
+        className="absolute inset-x-0 bottom-0 z-20 select-none"
+        onMouseMove={showControls}
       >
+        <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/92 via-black/50 to-transparent transition-opacity duration-200 ${showFullControls ? "opacity-100" : "opacity-0"}`} style={{ height: 130 }} />
+
         <div
           ref={progressRef}
-          className="group/progress relative h-5 cursor-pointer py-2"
-          onPointerMove={handleProgressHover}
-          onPointerLeave={handleProgressLeave}
-          onPointerDown={handleProgressClick}
+          className="group/progress relative cursor-pointer px-3"
+          style={{ height: barThick ? 28 : 14, paddingTop: barThick ? 8 : 6, paddingBottom: barThick ? 4 : 0 }}
+          onPointerEnter={handleProgressPointerEnter}
+          onPointerMove={(e) => { handleProgressPointerMove(e); handleProgressPointerMoveDrag(e); }}
+          onPointerLeave={handleProgressPointerLeave}
+          onPointerDown={handleProgressPointerDown}
+          onPointerUp={handleProgressPointerUp}
+          onPointerDownCapture={(e) => e.stopPropagation()}
+          onPointerUpCapture={(e) => e.stopPropagation()}
         >
-          <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/20 transition-[height] duration-100 group-hover/progress:h-1.5">
-            <div className="h-full bg-white/35 transition-[width] duration-100" style={{ width: `${bufferedPct}%` }} />
-          </div>
-          <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full transition-[height] duration-100 group-hover/progress:h-1.5">
-            <div className="h-full bg-[var(--accent)] transition-[width] duration-100" style={{ width: `${progressPct}%` }} />
-          </div>
-          {hoverTime != null ? (
-            <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full transition-[height] duration-100 group-hover/progress:h-1.5">
-              <div className="h-full bg-white/25" style={{ width: `${hoverPct}%` }} />
-            </div>
-          ) : null}
-          <div
-            className="pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--accent)] shadow-md ring-2 ring-black/40 transition-transform group-hover/progress:scale-125"
-            style={{ left: `${progressPct}%` }}
-          />
-
-          {hoverTime != null && spriteUrl && spriteInfo && hoverTileIndex >= 0 ? (
-            <div
-              className="pointer-events-none absolute -top-2 -translate-x-1/2 -translate-y-full overflow-hidden rounded-lg border border-white/15 bg-black shadow-2xl"
-              style={{ left: hoverLeftPx }}
-            >
+          <div className={`relative w-full overflow-hidden rounded-full bg-white/20 transition-[height] duration-100 ${barThick ? "h-1.5" : "h-[3px]"}`}>
+            <div className="absolute inset-y-0 left-0 bg-white/35 transition-[width] duration-100" style={{ width: `${bufferedPct}%` }} />
+            <div className={`pointer-events-none absolute inset-y-0 left-0 transition-[width] duration-100 ${barThick ? "bg-[var(--accent)]" : "bg-[var(--accent)]/80"}`} style={{ width: `${progressPct}%` }} />
+            {hoverTime != null ? (
+              <div className="pointer-events-none absolute inset-y-0 left-0 bg-white/25" style={{ width: `${hoverPct}%` }} />
+            ) : null}
+            {barThick ? (
               <div
-                className="relative"
-                style={{ width: spriteInfo.thumbW, height: spriteInfo.thumbH }}
-              >
+                className="pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--accent)] shadow-md ring-2 ring-black/40"
+                style={{ left: `${progressPct}%` }}
+              />
+            ) : null}
+          </div>
+
+          {hoverTime != null && barThick && spriteUrl && spriteInfo && hoverTileIndex >= 0 ? (
+            <div
+              className="pointer-events-none absolute -translate-x-1/2 overflow-hidden rounded-lg border border-white/15 bg-black shadow-2xl"
+              style={{ left: `calc(12px + ${hoverLeftPx}px)`, bottom: "100%" }}
+            >
+              <div className="relative overflow-hidden" style={{ width: spriteInfo.thumbW, height: spriteInfo.thumbH }}>
                 {spriteLoaded ? null : <div className="absolute inset-0 animate-pulse bg-white/10" />}
                 <img
                   src={spriteUrl}
@@ -400,28 +508,32 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
                 {formatTime(hoverTime)}
               </div>
             </div>
-          ) : hoverTime != null ? (
+          ) : hoverTime != null && barThick ? (
             <div
-              className="pointer-events-none absolute -top-2 -translate-x-1/2 -translate-y-full rounded-md bg-black/90 px-2 py-1 text-xs tabular-nums text-white shadow-lg"
-              style={{ left: hoverLeftPx }}
+              className="pointer-events-none absolute -translate-x-1/2 rounded-md bg-black/90 px-2 py-1 text-xs tabular-nums text-white shadow-lg"
+              style={{ left: `calc(12px + ${hoverLeftPx}px)`, bottom: "100%" }}
             >
               {formatTime(hoverTime)}
             </div>
           ) : null}
         </div>
 
-        <div className="flex h-9 items-center gap-0.5">
-          <button className="player-btn" onClick={togglePlay} aria-label={playing ? "暂停 (K)" : "播放 (K)"}>
+        <div
+          className={`flex h-9 items-center gap-0.5 px-3 pb-2 transition-opacity duration-200 ${showFullControls ? "opacity-100" : "pointer-events-none opacity-0"}`}
+          onPointerDownCapture={(e) => e.stopPropagation()}
+          onPointerUpCapture={(e) => e.stopPropagation()}
+        >
+          <button className="player-btn pointer-events-auto" onClick={togglePlay} aria-label={playing ? "暂停 (K)" : "播放 (K)"}>
             {playing ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
           </button>
-          <button className="player-btn" onClick={() => seekBy(-10)} aria-label="后退10秒 (J)">
+          <button className="player-btn pointer-events-auto" onClick={() => seekBy(-10)} aria-label="后退10秒 (J)">
             <Rewind size={18} />
           </button>
-          <button className="player-btn" onClick={() => seekBy(10)} aria-label="快进10秒 (L)">
+          <button className="player-btn pointer-events-auto" onClick={() => seekBy(10)} aria-label="快进10秒 (L)">
             <FastForward size={18} />
           </button>
 
-          <div className="flex items-center gap-1.5 pl-1 group/vol">
+          <div className="pointer-events-auto flex items-center gap-1.5 pl-1 group/vol">
             <button className="player-btn" onClick={() => setMuted((v) => !v)} aria-label={muted ? "取消静音 (M)" : "静音 (M)"}>
               {muted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
             </button>
@@ -443,11 +555,11 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
           </span>
 
           <div className="ml-auto flex items-center gap-0.5">
-            <div className="relative">
+            <div className="relative pointer-events-auto">
               <button
+                ref={speedBtnRef}
                 className="player-btn min-w-[2.75rem] px-2 text-sm font-medium"
                 onClick={() => setSpeedMenuOpen((v) => !v)}
-                onWheel={(event) => { event.preventDefault(); cycleSpeed(event.deltaY > 0 ? 1 : -1); }}
                 aria-label="播放速度"
               >
                 {speed}×
@@ -460,7 +572,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
                       <button
                         key={value}
                         className={`flex w-20 items-center justify-center px-3 py-1.5 text-sm transition ${value === speed ? "bg-[var(--accent-soft)] text-[var(--accent)]" : "text-white/70 hover:bg-white/8 hover:text-white"}`}
-                        onClick={() => { setSpeed(value); setSpeedMenuOpen(false); }}
+                        onClick={() => { setSpeed(value); setSpeedMenuOpen(false); showControls(); }}
                       >
                         {value}×
                       </button>
@@ -470,7 +582,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
               ) : null}
             </div>
 
-            <button className="player-btn" onClick={toggleFullscreen} aria-label={isFullscreen ? "退出全屏 (F)" : "全屏 (F)"}>
+            <button className="player-btn pointer-events-auto" onClick={toggleFullscreen} aria-label={isFullscreen ? "退出全屏 (F)" : "全屏 (F)"}>
               {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
             </button>
           </div>

@@ -11,6 +11,8 @@ const env = {
   HILI_ALLOWED_MEDIA_ROOT: libraryRoot,
   HILI_API_HOST: "127.0.0.1",
   HILI_API_PORT: "4241",
+  HILI_FFMPEG_PATH: "/usr/bin/ffmpeg",
+  HILI_FFPROBE_PATH: "/usr/bin/ffprobe",
   NEXT_PUBLIC_API_BASE_URL: "http://localhost:4241",
   PORT: "3100"
 };
