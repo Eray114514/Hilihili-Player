@@ -152,10 +152,20 @@ function migrate(db: Database.Database) {
       blacklisted INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS media_subtitles (
+      id TEXT PRIMARY KEY,
+      part_id TEXT NOT NULL REFERENCES media_parts(id) ON DELETE CASCADE,
+      path TEXT NOT NULL,
+      language TEXT NOT NULL,
+      label TEXT NOT NULL,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      sort_index INTEGER NOT NULL DEFAULT 0
+    );
     CREATE INDEX IF NOT EXISTS media_items_library_idx ON media_items(library_id);
     CREATE INDEX IF NOT EXISTS media_items_category_idx ON media_items(category_id);
     CREATE INDEX IF NOT EXISTS media_items_creator_idx ON media_items(creator_id);
     CREATE INDEX IF NOT EXISTS media_parts_item_idx ON media_parts(item_id);
+    CREATE INDEX IF NOT EXISTS media_subtitles_part_idx ON media_subtitles(part_id);
     CREATE INDEX IF NOT EXISTS media_images_item_idx ON media_images(item_id);
     CREATE INDEX IF NOT EXISTS interactions_target_idx ON interactions(target_type, target_id);
     CREATE INDEX IF NOT EXISTS comments_item_idx ON comments(item_id);

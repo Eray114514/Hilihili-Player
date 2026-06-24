@@ -78,6 +78,14 @@ export type ItemImage = {
   originalUrl: string;
 };
 
+export type SubtitleTrack = {
+  id: string;
+  language: string;
+  label: string;
+  isDefault: boolean;
+  url: string;
+};
+
 export type PartDetail = {
   id: string;
   title: string;
@@ -92,6 +100,7 @@ export type PartDetail = {
   previewSpriteInterval: number | null;
   previewThumbW: number | null;
   previewThumbH: number | null;
+  subtitles: SubtitleTrack[];
 };
 
 export type ItemDetail = {

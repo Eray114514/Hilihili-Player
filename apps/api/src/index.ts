@@ -195,7 +195,45 @@ app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
       preview_thumb_w AS previewThumbW,
       preview_thumb_h AS previewThumbH
     FROM media_parts WHERE item_id = ? ORDER BY part_index ASC
-  `).all(request.params.id);
+  `).all(request.params.id) as {
+    id: string;
+    title: string;
+    partIndex: number;
+    sizeBytes: number;
+    durationSeconds: number | null;
+    compatibilityStatus: string;
+    compatibilityError: string | null;
+    previewSpritePath: string | null;
+    previewSpriteCols: number | null;
+    previewSpriteRows: number | null;
+    previewSpriteInterval: number | null;
+    previewThumbW: number | null;
+    previewThumbH: number | null;
+  }[];
+
+  const partIds = parts.map((part) => part.id);
+  const subtitlesRows = partIds.length > 0
+    ? db.prepare(`
+        SELECT id, part_id AS partId, language, label, is_default AS isDefault, sort_index AS sortIndex
+        FROM media_subtitles WHERE part_id IN (${partIds.map(() => "?").join(",")})
+        ORDER BY sort_index ASC
+      `).all(...partIds) as {
+        id: string;
+        partId: string;
+        language: string;
+        label: string;
+        isDefault: number;
+        sortIndex: number;
+      }[]
+    : [];
+  const subtitlesByPart = new Map<string, { id: string; language: string; label: string; isDefault: boolean; url: string }[]>();
+  for (const row of subtitlesRows) {
+    const list = subtitlesByPart.get(row.partId) ?? [];
+    list.push({ id: row.id, language: row.language, label: row.label, isDefault: Boolean(row.isDefault), url: `/media/parts/${row.partId}/subtitles/${row.id}` });
+    subtitlesByPart.set(row.partId, list);
+  }
+  const partsWithSubtitles = parts.map((part) => ({ ...part, subtitles: subtitlesByPart.get(part.id) ?? [] }));
+
   const comments = db.prepare("SELECT id, body, at_seconds AS atSeconds, created_at AS createdAt FROM comments WHERE item_id = ? ORDER BY created_at DESC")
     .all(request.params.id);
   const images = db.prepare(`
@@ -213,7 +251,7 @@ app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
   `).all(request.params.id) as { name: string }[];
   const related = getRecommendedFeed({ limit: 12, seed: request.params.id, includeFinished: false, excludeId: request.params.id });
 
-  return { item, parts, images: imageAssets, tags: tags.map((tag) => tag.name), comments, related };
+  return { item, parts: partsWithSubtitles, images: imageAssets, tags: tags.map((tag) => tag.name), comments, related };
 });
 
 app.get<{ Params: { id: string; variant: string } }>("/media/images/:id/:variant", async (request, reply) => {
@@ -260,6 +298,19 @@ app.get<{ Params: { id: string } }>("/media/parts/:id/sprite", async (request, r
   reply.header("Content-Type", "image/webp");
   reply.header("Cache-Control", "public, max-age=604800");
   return reply.send(createReadStream(spritePath));
+});
+
+app.get<{ Params: { id: string; subId: string } }>("/media/parts/:id/subtitles/:subId", async (request, reply) => {
+  const row = db.prepare("SELECT path FROM media_subtitles WHERE id = ? AND part_id = ?")
+    .get(request.params.subId, request.params.id) as { path: string } | undefined;
+  if (!row || !existsSync(row.path)) {
+    return reply.code(404).send({ error: "Subtitle not found" });
+  }
+  const ext = extname(row.path).toLowerCase();
+  const contentType = ext === ".vtt" ? "text/vtt" : ext === ".srt" ? "text/plain" : "application/octet-stream";
+  reply.header("Content-Type", contentType);
+  reply.header("Cache-Control", "public, max-age=604800");
+  return reply.send(createReadStream(row.path));
 });
 
 app.put<{ Params: { id: string }; Body: { reaction?: "like" | "dislike" | null } }>("/items/:id/reaction", async (request, reply) => {
