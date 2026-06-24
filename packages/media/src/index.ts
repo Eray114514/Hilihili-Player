@@ -229,6 +229,7 @@ export async function processNextScanRun() {
     }
 
     await generateMissingThumbnails(db, run.id, libraries.map((item) => item.id));
+    pruneOrphanTags(db);
     db.prepare("UPDATE scan_runs SET status = 'complete', finished_at = ?, items_indexed = ? WHERE id = ?")
       .run(nowIso(), indexed, run.id);
   } catch (error) {
@@ -251,6 +252,7 @@ export async function scanEnabledLibraries() {
     total += scanLibraryContents(db, library);
   }
 
+  pruneOrphanTags(db);
   return total;
 }
 
@@ -261,7 +263,9 @@ export async function scanLibrary(libraryId: string) {
     throw new Error(`Library not found: ${libraryId}`);
   }
 
-  return scanLibraryContents(db, library);
+  const result = scanLibraryContents(db, library);
+  pruneOrphanTags(db);
+  return result;
 }
 
 function scanLibraryContents(db: SqliteDatabase, library: LibraryRow) {
@@ -792,9 +796,15 @@ function replaceImages(db: SqliteDatabase, itemId: string, images: string[]) {
 function clearLegacyChildren(db: SqliteDatabase, libraryId: string, folderPath: string) {
   const prefix = `${folderPath}${sep}`;
   const rows = db.prepare("SELECT id, source_path FROM media_items WHERE library_id = ?").all(libraryId) as { id: string; source_path: string }[];
-  const remove = db.prepare("DELETE FROM media_items WHERE id = ?");
+  const deleteInteractions = db.prepare("DELETE FROM interactions WHERE target_type = 'item' AND target_id = ?");
+  const deleteMediaTags = db.prepare("DELETE FROM media_tags WHERE media_item_id = ?");
+  const deleteItem = db.prepare("DELETE FROM media_items WHERE id = ?");
   for (const row of rows) {
-    if (row.source_path.startsWith(prefix)) remove.run(row.id);
+    if (row.source_path.startsWith(prefix)) {
+      deleteInteractions.run(row.id);
+      deleteMediaTags.run(row.id);
+      deleteItem.run(row.id);
+    }
   }
 }
 
@@ -805,9 +815,11 @@ function pruneUnseenItems(db: SqliteDatabase, libraryId: string, seenItemIds: Se
 
   const remove = db.transaction((ids: string[]) => {
     const deleteInteractions = db.prepare("DELETE FROM interactions WHERE target_type = 'item' AND target_id = ?");
+    const deleteMediaTags = db.prepare("DELETE FROM media_tags WHERE media_item_id = ?");
     const deleteItem = db.prepare("DELETE FROM media_items WHERE id = ?");
     for (const id of ids) {
       deleteInteractions.run(id);
+      deleteMediaTags.run(id);
       deleteItem.run(id);
     }
   });
@@ -823,6 +835,16 @@ function getOrCreateTag(db: SqliteDatabase, name: string) {
   const id = createId("tag");
   db.prepare("INSERT INTO tags (id, name) VALUES (?, ?)").run(id, name);
   return id;
+}
+
+function pruneOrphanTags(db: SqliteDatabase) {
+  const result = db.prepare(`
+    DELETE FROM tags
+    WHERE id NOT IN (SELECT DISTINCT tag_id FROM media_tags)
+  `).run();
+  if (result.changes > 0) {
+    console.log(`[media] pruned ${result.changes} orphan tag(s)`);
+  }
 }
 
 function fingerprintFile(filePath: string) {
