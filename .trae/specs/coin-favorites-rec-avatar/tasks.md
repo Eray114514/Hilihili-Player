@@ -70,9 +70,9 @@
   - [x] 11.3: 运行 `corepack pnpm build`（packages/shared 失败为预先存在的 tsconfig 问题，已在 main 复现）
   - [x] 11.4: API 运行时冒烟测试通过（投币 toggle、3 级交互传播、收藏 CRUD、推荐 feed 均正常）
 
-- [ ] Task 12: 合并 main
-  - [ ] 12.1: 在功能分支上提交所有变更
-  - [ ] 12.2: 合并到 main 分支
+- [x] Task 12: 合并 main
+  - [x] 12.1: 在功能分支上提交所有变更
+  - [x] 12.2: 合并到 main 分支
 
 # Task Dependencies
 - Task 3、4、5 依赖 Task 1、2（数据模型与类型）

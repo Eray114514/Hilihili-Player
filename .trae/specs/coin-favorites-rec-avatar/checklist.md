@@ -55,4 +55,4 @@
 - [ ] `corepack pnpm lint` 通过 — apps/web 失败为**预先存在**的工具链不兼容（eslint-plugin-react@7.37.5 vs ESLint 10），与本次改动无关，已在原始 main 上复现
 - [ ] `corepack pnpm build` 通过 — packages/shared 失败为**预先存在**的 tsconfig rootDir 配置问题，与本次改动无关，已在原始 main 上复现
 - [x] 安全演示手动验证全部场景通过（API 运行时冒烟测试：投币 toggle、3 级交互传播、收藏 CRUD、推荐 feed 均正常）
-- [ ] 变更已合并到 main
+- [x] 变更已合并到 main
