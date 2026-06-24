@@ -847,9 +847,16 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
         db.prepare("UPDATE media_parts SET duration_seconds = ? WHERE id = ?").run(duration, part.id);
       }
 
-      if (isBrowserPlayable(part.path, mediaInfo)) {
+      if (isBrowserPlayable(part.path, mediaInfo) && hasFastStart(part.path)) {
         db.prepare("UPDATE media_parts SET stream_path = NULL, stream_size_bytes = NULL, compatibility_status = 'ready', compatibility_error = NULL WHERE id = ?")
           .run(part.id);
+      } else if (isBrowserPlayable(part.path, mediaInfo)) {
+        // 编码兼容但 moov atom 在文件末尾，remux 为 faststart（流复制，不重新编码）
+        const streamPath = part.stream_path && existsSync(part.stream_path)
+          ? part.stream_path
+          : await remuxWithFaststart(part.path, part.fingerprint);
+        db.prepare("UPDATE media_parts SET stream_path = ?, stream_size_bytes = ?, compatibility_status = 'ready', compatibility_error = NULL WHERE id = ?")
+          .run(streamPath, statSync(streamPath).size, part.id);
       } else {
         const streamPath = part.stream_path && existsSync(part.stream_path)
           ? part.stream_path
@@ -969,7 +976,7 @@ async function generateThumbnail(videoPath: string, fingerprint: string) {
       const candidatePath = join(cacheDir, `${fingerprint}.${index}.webp`);
       try {
         await runProcess(getFfmpegPath(), [
-          "-hide_banner", "-loglevel", "error", "-i", videoPath, "-ss", String(candidates[index]),
+          "-hide_banner", "-loglevel", "error", "-ss", String(candidates[index]), "-i", videoPath,
           "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=640:360:force_original_aspect_ratio=increase,crop=640:360",
           "-c:v", "libwebp", "-quality", "82", "-y", candidatePath
         ]);
@@ -1044,6 +1051,59 @@ function isBrowserPlayable(videoPath: string, media: ProbedMedia) {
       && (media.audioCodec === null || ["opus", "vorbis"].includes(media.audioCodec));
   }
   return false;
+}
+
+/**
+ * 检查 MP4 文件的 moov atom 是否在文件开头（faststart）。
+ * 浏览器需要 moov 在开头才能流式播放；若 moov 在末尾，浏览器需先下载整个文件才能播放。
+ * 仅适用于 MP4/M4V/MOV 容器，其他容器（如 WebM）始终返回 true。
+ */
+function hasFastStart(videoPath: string): boolean {
+  const extension = extname(videoPath).toLowerCase();
+  if (![".mp4", ".m4v", ".mov"].includes(extension)) {
+    return true;
+  }
+  let fd: number | null = null;
+  try {
+    const buffer = Buffer.alloc(65536);
+    fd = openSync(videoPath, "r");
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
+    const content = buffer.subarray(0, bytesRead).toString("latin1");
+    const moovIndex = content.indexOf("moov");
+    const mdatIndex = content.indexOf("mdat");
+    if (moovIndex === -1) return false;
+    if (mdatIndex === -1) return true;
+    return moovIndex < mdatIndex;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+/**
+ * 将视频 remux 为 faststart 格式（流复制，不重新编码）。
+ * 仅重新组织文件结构，将 moov atom 移到文件开头，速度远快于转码。
+ */
+async function remuxWithFaststart(videoPath: string, fingerprint: string): Promise<string> {
+  const cacheDir = getAppMediaCacheDir();
+  mkdirSync(cacheDir, { recursive: true });
+  const outputPath = join(cacheDir, `${fingerprint}.faststart.mp4`);
+  if (existsSync(outputPath)) return outputPath;
+  const temporaryPath = join(cacheDir, `${fingerprint}.faststart.tmp.mp4`);
+  if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+  try {
+    await runProcess(getFfmpegPath(), [
+      "-hide_banner", "-loglevel", "error", "-i", videoPath,
+      "-map", "0:V:0", "-map", "0:a:0?",
+      "-c", "copy", "-movflags", "+faststart", "-y", temporaryPath
+    ]);
+    if (!existsSync(temporaryPath)) throw new Error("FFmpeg did not produce a remuxed video");
+    renameSync(temporaryPath, outputPath);
+    return outputPath;
+  } finally {
+    if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+  }
 }
 
 async function generateCompatibleVideo(videoPath: string, fingerprint: string) {

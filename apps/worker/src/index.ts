@@ -10,6 +10,15 @@ let changeTimer: NodeJS.Timeout | null = null;
 
 getSqlite();
 
+// 恢复上次中断的 scan_runs：将卡在 'running' 状态的记录标记为 'failed'，
+// 否则 processNextScanRun 只查找 'queued' 状态的记录，这些孤儿记录会永远阻塞队列。
+const stuckRuns = getSqlite().prepare("SELECT id FROM scan_runs WHERE status = 'running'").all() as { id: string }[];
+for (const run of stuckRuns) {
+  getSqlite().prepare("UPDATE scan_runs SET status = 'failed', message = ?, finished_at = ? WHERE id = ?")
+    .run("Interrupted by worker restart", new Date().toISOString(), run.id);
+  console.log(`[worker] recovered stuck scan run: ${run.id}`);
+}
+
 let processing = false;
 
 async function drainQueue() {
