@@ -45,6 +45,134 @@ type InfoJson = {
   hidden?: boolean;
 };
 
+const SUBTITLE_EXTS = [".srt", ".vtt"];
+
+type SubtitleCandidate = {
+  path: string;
+  language: string;
+  label: string;
+  codeInFilename: string | null;
+  isDefault: boolean;
+  sortIndex: number;
+};
+
+function normalizeLanguageCode(raw: string): { code: string; label: string } | null {
+  const code = raw.toLowerCase();
+  const chinese = ["zh", "cmn", "chi", "zho", "chs", "cht", "sc", "tc"];
+  const korean = ["ko", "kor", "ys", "kr"];
+  const english = ["en", "eng", "us"];
+  const japanese = ["ja", "jpn", "jp"];
+  const spanish = ["es", "spa"];
+  const french = ["fr", "fra", "fre"];
+  const german = ["de", "deu", "ger"];
+  const russian = ["ru", "rus"];
+
+  if (chinese.includes(code)) return { code: "zh", label: "中文" };
+  if (korean.includes(code)) return { code: "ko", label: "韩语" };
+  if (english.includes(code)) return { code: "en", label: "英文" };
+  if (japanese.includes(code)) return { code: "ja", label: "日文" };
+  if (spanish.includes(code)) return { code: "es", label: "西班牙文" };
+  if (french.includes(code)) return { code: "fr", label: "法文" };
+  if (german.includes(code)) return { code: "de", label: "德文" };
+  if (russian.includes(code)) return { code: "ru", label: "俄文" };
+  if (/^[a-z]{2,3}$/.test(code)) return { code, label: code.toUpperCase() };
+  return null;
+}
+
+function scanSubtitles(db: SqliteDatabase, partId: string, videoPath: string) {
+  const folder = dirname(videoPath);
+  const base = basename(videoPath, extname(videoPath));
+  const entries = safeReadDir(folder);
+  const candidates: SubtitleCandidate[] = [];
+
+  for (const entry of entries) {
+    const fullPath = join(folder, entry);
+    const stat = safeStat(fullPath);
+    if (!stat?.isFile()) continue;
+    const ext = extname(entry).toLowerCase();
+    if (!SUBTITLE_EXTS.includes(ext)) continue;
+    const fileBase = basename(entry, ext);
+    if (!fileBase.startsWith(base)) continue;
+
+    const remainder = fileBase.slice(base.length);
+    const match = remainder.match(/^[._-]([a-zA-Z0-9]{2,3})$/);
+    const codeRaw = match?.[1] ?? null;
+    const normalized = codeRaw ? normalizeLanguageCode(codeRaw) : null;
+
+    if (codeRaw && !normalized) continue;
+
+    if (normalized) {
+      candidates.push({
+        path: fullPath,
+        language: normalized.code,
+        label: normalized.label,
+        codeInFilename: codeRaw!.toLowerCase(),
+        isDefault: false,
+        sortIndex: 0
+      });
+    } else if (fileBase === base) {
+      candidates.push({
+        path: fullPath,
+        language: "und",
+        label: "默认",
+        codeInFilename: null,
+        isDefault: false,
+        sortIndex: 0
+      });
+    }
+  }
+
+  if (candidates.length === 0) return;
+
+  const priority = (c: SubtitleCandidate) => {
+    if (c.language === "zh") return 0;
+    if (c.language === "ko") return 1;
+    if (c.language === "en") return 2;
+    if (c.language === "ja") return 3;
+    if (c.language === "und") return 99;
+    return 50;
+  };
+
+  candidates.sort((a, b) => priority(a) - priority(b) || a.label.localeCompare(b.label, "zh-CN"));
+  const hasZh = candidates.some((c) => c.language === "zh");
+  const hasDefaultCandidate = candidates.some((c) => c.language !== "und");
+
+  candidates.forEach((candidate, index) => {
+    candidate.sortIndex = index;
+    candidate.isDefault = hasZh
+      ? candidate.language === "zh"
+      : !hasDefaultCandidate
+        ? index === 0
+        : candidate.language !== "und" && index === 0;
+  });
+
+  const insert = db.prepare(`
+    INSERT INTO media_subtitles (id, part_id, path, language, label, is_default, sort_index)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const candidate of candidates) {
+    insert.run(createId("sub"), partId, candidate.path, candidate.language, candidate.label, candidate.isDefault ? 1 : 0, candidate.sortIndex);
+  }
+}
+
+function upsertPartWithSubtitles(
+  db: SqliteDatabase,
+  itemId: string,
+  title: string,
+  partIndex: number,
+  videoPath: string,
+  sizeBytes: number,
+  fingerprint: string
+) {
+  const partId = createId("part");
+  db.prepare(`
+    INSERT INTO media_parts (id, item_id, title, part_index, path, size_bytes, fingerprint)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(partId, itemId, title, partIndex, videoPath, sizeBytes, fingerprint);
+  scanSubtitles(db, partId, videoPath);
+  return partId;
+}
+
 export function enqueueScan(libraryId?: string) {
   const db = getSqlite();
   const existing = (libraryId
@@ -351,10 +479,7 @@ function indexMultiPartVideo(
     const pKey = partName.match(/^p(\d+)$/i)?.[0].toUpperCase();
     const titleForPart = pKey && info.p_titles?.[pKey] ? info.p_titles[pKey] : cleanTitle(partName);
     const stat = statSync(path);
-    db.prepare(`
-      INSERT INTO media_parts (id, item_id, title, part_index, path, size_bytes, fingerprint)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(createId("part"), itemId, titleForPart, index + 1, path, stat.size, fingerprintFile(path));
+    upsertPartWithSubtitles(db, itemId, titleForPart, index + 1, path, stat.size, fingerprintFile(path));
   });
 
   db.prepare("DELETE FROM media_images WHERE item_id = ?").run(itemId);
@@ -477,10 +602,7 @@ function indexSingleFile(
 
   if (kind === "video") {
     clearParts(db, itemId);
-    db.prepare(`
-      INSERT INTO media_parts (id, item_id, title, part_index, path, size_bytes, fingerprint)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(createId("part"), itemId, title, 1, filePath, fileStat.size, fingerprintFile(filePath));
+    upsertPartWithSubtitles(db, itemId, title, 1, filePath, fileStat.size, fingerprintFile(filePath));
     db.prepare("DELETE FROM media_images WHERE item_id = ?").run(itemId);
   } else {
     clearParts(db, itemId);
@@ -613,10 +735,7 @@ function replaceParts(db: SqliteDatabase, itemId: string, videos: string[], info
     const partName = basename(path, extname(path));
     const pKey = partName.match(/^p(\d+)$/i)?.[0].toUpperCase();
     const stat = statSync(path);
-    db.prepare(`
-      INSERT INTO media_parts (id, item_id, title, part_index, path, size_bytes, fingerprint)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(createId("part"), itemId, pKey && info.p_titles?.[pKey] ? info.p_titles[pKey] : cleanTitle(partName), index + 1, path, stat.size, fingerprintFile(path));
+    upsertPartWithSubtitles(db, itemId, pKey && info.p_titles?.[pKey] ? info.p_titles[pKey] : cleanTitle(partName), index + 1, path, stat.size, fingerprintFile(path));
   });
 }
 

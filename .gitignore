@@ -12,3 +12,4 @@ app-data
 *.db-shm
 *.db-wal
 .hilihili-safe-demo
+.pnpm-store

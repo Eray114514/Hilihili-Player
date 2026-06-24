@@ -183,6 +183,22 @@ export const scanRuns = sqliteTable("scan_runs", {
   thumbnailsFailed: integer("thumbnails_failed").notNull().default(0)
 });
 
+export const mediaSubtitles = sqliteTable(
+  "media_subtitles",
+  {
+    id: text("id").primaryKey(),
+    partId: text("part_id").notNull().references(() => mediaParts.id, { onDelete: "cascade" }),
+    path: text("path").notNull(),
+    language: text("language").notNull(),
+    label: text("label").notNull(),
+    isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+    sortIndex: integer("sort_index").notNull().default(0)
+  },
+  (table) => ({
+    byPart: index("media_subtitles_part_idx").on(table.partId)
+  })
+);
+
 export const itemPreferences = sqliteTable("item_preferences", {
   itemId: text("item_id").primaryKey().references(() => mediaItems.id),
   reaction: text("reaction", { enum: ["like", "dislike"] }),
