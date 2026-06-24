@@ -25,6 +25,7 @@ type CandidateRow = {
 
 export type FeedOptions = {
   limit?: number;
+  offset?: number;
   seed?: string;
   categoryId?: string;
   creatorId?: string;
@@ -39,6 +40,7 @@ export type FeedOptions = {
 
 export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
   const limit = Math.min(Math.max(options.limit ?? 24, 1), 80);
+  const offset = Math.min(Math.max(options.offset ?? 0, 0), 10000);
   const db = getSqlite();
   const params: (string | number)[] = [];
   const filters = ["mi.hidden = 0"];
@@ -114,7 +116,7 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
         ? scored.sort((a, b) => seededRandom(`${options.seed}:${a.row.id}`) - seededRandom(`${options.seed}:${b.row.id}`))
         : scored.sort((a, b) => b.score - a.score);
 
-  return sorted.slice(0, limit).map(({ row, score }) => toFeedItem(db, row, score));
+  return sorted.slice(offset, offset + limit).map(({ row, score }) => toFeedItem(db, row, score));
 }
 
 export function getFeedItemsByIds(ids: string[]): FeedItem[] {

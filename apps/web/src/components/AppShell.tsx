@@ -1,9 +1,9 @@
 "use client";
 
-import { CheckCircle2, ChevronRight, Clapperboard, Heart, History, Home, Library, Play, Radio, Settings } from "lucide-react";
+import { CheckCircle2, ChevronRight, Clapperboard, Heart, History, Home, Library, Play, Radio, Search, Settings } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
+import { Suspense, type ReactNode } from "react";
 
 const navItems = [
   { href: "/", label: "首页", icon: Home },
@@ -16,9 +16,9 @@ export function AppShell({ children, wide = false }: { children: ReactNode; wide
   return (
     <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)]">
       <header className="sticky top-0 z-40 border-b border-white/8 bg-[#0d0f14]/88 backdrop-blur-xl">
-        <div className={`mx-auto flex h-15 items-center gap-6 px-4 md:px-6 ${wide ? "max-w-[1760px]" : "max-w-[1600px]"}`}>
+        <div className={`mx-auto flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-2.5 md:h-17 md:flex-nowrap md:px-6 md:py-0 ${wide ? "max-w-[1760px]" : "max-w-[1600px]"}`}>
           <Link href="/" className="flex items-center gap-2 text-lg font-semibold tracking-tight">
-            <span className="grid h-8 w-8 place-items-center rounded-lg bg-[var(--accent)] text-[#07110f]"><Clapperboard size={19} /></span>
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-[linear-gradient(145deg,#8af7e4,#49d6c0)] text-[#07110f] shadow-[0_0_24px_rgba(94,234,212,.18)]"><Clapperboard size={19} /></span>
             <span>Hilihili</span>
           </Link>
           <nav className="hidden items-center gap-1 md:flex">
@@ -27,11 +27,14 @@ export function AppShell({ children, wide = false }: { children: ReactNode; wide
               return <Link key={item.href} href={item.href} className={`nav-link ${active ? "active" : ""}`}>{item.label}</Link>;
             })}
           </nav>
-          <div className="ml-auto"><ProfileMenu /></div>
+          <div className="order-3 w-full md:order-none md:ml-auto md:max-w-xl">
+            <Suspense fallback={<HeaderSearchFallback />}><HeaderSearch /></Suspense>
+          </div>
+          <div className="ml-auto md:ml-0"><ProfileMenu /></div>
         </div>
       </header>
 
-      <main className={`mx-auto min-h-[calc(100vh-3.75rem)] px-4 pb-24 pt-6 md:px-6 md:pb-12 ${wide ? "max-w-[1760px]" : "max-w-[1600px]"}`}>{children}</main>
+      <main className={`mx-auto min-h-[calc(100vh-4.25rem)] px-4 pb-24 pt-6 md:px-6 md:pb-12 ${wide ? "max-w-[1760px]" : "max-w-[1600px]"}`}>{children}</main>
 
       <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-3 border-t border-white/8 bg-[#0d0f14]/96 px-4 py-2 backdrop-blur md:hidden">
         {navItems.map((item) => {
@@ -42,6 +45,28 @@ export function AppShell({ children, wide = false }: { children: ReactNode; wide
       </nav>
     </div>
   );
+}
+
+function HeaderSearch() {
+  const searchParams = useSearchParams();
+  return (
+    <form action="/search" className="group relative">
+      <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-white/38 transition group-focus-within:text-[var(--accent)]" size={18} />
+      <input
+        type="search"
+        name="q"
+        defaultValue={searchParams.get("q") ?? ""}
+        placeholder="搜索视频、UP 主、分区或标签"
+        aria-label="搜索媒体库"
+        className="h-10 w-full rounded-xl border border-white/9 bg-white/[0.055] pl-10 pr-20 text-sm text-white outline-none transition placeholder:text-white/30 hover:bg-white/[0.075] focus:border-[rgba(94,234,212,.42)] focus:bg-[#161b20] focus:shadow-[0_0_0_3px_rgba(94,234,212,.08)]"
+      />
+      <button type="submit" className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-lg bg-white/8 px-2.5 py-1.5 text-xs text-white/55 transition hover:bg-white/14 hover:text-white">搜索</button>
+    </form>
+  );
+}
+
+function HeaderSearchFallback() {
+  return <div className="h-10 w-full animate-pulse rounded-xl bg-white/[0.055]" />;
 }
 
 function ProfileMenu() {

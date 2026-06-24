@@ -70,6 +70,7 @@ export async function deleteJson<T>(path: string): Promise<T> {
 }
 
 export type FeedResponse = { items: FeedItem[] };
+export type SearchResponse = { query: string; items: FeedItem[]; total: number; hasMore: boolean };
 export type LibrariesResponse = { libraries: Library[] };
 export type FsRootsResponse = { roots: DirectoryEntry[] };
 export type FsListResponse = { path: string; parent: string | null; entries: DirectoryEntry[] };
