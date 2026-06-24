@@ -10,7 +10,7 @@ services:
       - "4141:4141"
     volumes:
       - hilihili-data:/data
-      - /volume1:/volume1
+      - /volume1/@home/Eray:/volume1/Eray
     restart: unless-stopped
 
   worker:
@@ -21,7 +21,7 @@ services:
       HILI_SCAN_INTERVAL_MS: 900000
     volumes:
       - hilihili-data:/data
-      - /volume1:/volume1
+      - /volume1/@home/Eray:/volume1/Eray
     restart: unless-stopped
 
   web:
