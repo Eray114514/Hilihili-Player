@@ -80,7 +80,8 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
       mi.content_published_at, mi.file_modified_at, mi.cover_path, mi.generated_cover_path, mi.thumbnail_status,
       c.name AS category_name,
       cr.name AS creator_name, cr.alias AS creator_alias,
-      COALESCE(pc.part_count, 0) AS part_count, pc.preview_part_id,
+      COALESCE(pc.part_count, 0) AS part_count,
+      (SELECT mp.id FROM media_parts mp WHERE mp.item_id = mi.id ORDER BY mp.part_index ASC LIMIT 1) AS preview_part_id,
       wp.finished,
       CASE WHEN EXISTS (
         SELECT 1 FROM interactions i
@@ -94,8 +95,7 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
     LEFT JOIN creators cr ON cr.id = mi.creator_id
     LEFT JOIN watch_progress wp ON wp.item_id = mi.id
     LEFT JOIN (
-      SELECT item_id, COUNT(*) AS part_count,
-        MAX(CASE WHEN part_index = 1 THEN id END) AS preview_part_id
+      SELECT item_id, COUNT(*) AS part_count
       FROM media_parts GROUP BY item_id
     ) pc ON pc.item_id = mi.id
     WHERE ${filters.join(" AND ")}

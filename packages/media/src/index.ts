@@ -956,10 +956,19 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
     return;
   }
   const placeholders = libraryIds.map(() => "?").join(",");
+  // 用 MIN(part_index) 取首个分P，而非硬编码 part_index = 1。
+  // upsertPartWithSubtitles 按 path 全局复用分P，clearParts 按 item_id 删除，
+  // 在目录重组/分P跨 item 复用/扫描中断等场景下，item 的最小 part_index 可能不是 1。
+  // 硬编码 part_index = 1 会让这些 item 被排除，封面永远不生成（thumbnail_status 卡在 pending）。
   const coverRows = db.prepare(`
     SELECT mi.id, mi.fingerprint, mi.generated_cover_path, mp.path, mp.id AS part_id
     FROM media_items mi
-    JOIN media_parts mp ON mp.item_id = mi.id AND mp.part_index = 1
+    JOIN media_parts mp ON mp.id = (
+      SELECT inner_mp.id FROM media_parts inner_mp
+      WHERE inner_mp.item_id = mi.id
+      ORDER BY inner_mp.part_index ASC
+      LIMIT 1
+    )
     WHERE mi.library_id IN (${placeholders}) AND mi.kind IN ('video', 'post') AND mi.cover_path IS NULL
     ORDER BY mi.first_seen_at DESC
   `).all(...libraryIds) as { id: string; fingerprint: string; generated_cover_path: string | null; path: string; part_id: string }[];
