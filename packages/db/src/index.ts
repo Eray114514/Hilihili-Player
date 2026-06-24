@@ -154,6 +154,18 @@ function migrate(db: Database.Database) {
       blacklisted INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS favorite_folders (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS favorites (
+      id TEXT PRIMARY KEY,
+      folder_id TEXT NOT NULL REFERENCES favorite_folders(id) ON DELETE CASCADE,
+      item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      UNIQUE(folder_id, item_id)
+    );
     CREATE TABLE IF NOT EXISTS media_subtitles (
       id TEXT PRIMARY KEY,
       part_id TEXT NOT NULL REFERENCES media_parts(id) ON DELETE CASCADE,
@@ -171,6 +183,8 @@ function migrate(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS media_images_item_idx ON media_images(item_id);
     CREATE INDEX IF NOT EXISTS interactions_target_idx ON interactions(target_type, target_id);
     CREATE INDEX IF NOT EXISTS comments_item_idx ON comments(item_id);
+    CREATE INDEX IF NOT EXISTS favorites_folder_idx ON favorites(folder_id);
+    CREATE INDEX IF NOT EXISTS favorites_item_idx ON favorites(item_id);
   `);
 
   ensureColumn(db, "media_items", "generated_cover_path", "TEXT");
@@ -195,6 +209,8 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "creators", "alias", "TEXT");
   ensureColumn(db, "watch_progress", "started_at", "TEXT");
   ensureColumn(db, "watch_progress", "completed_at", "TEXT");
+  ensureColumn(db, "item_preferences", "coined", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "item_preferences", "coined_at", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS media_items_library_relative_idx ON media_items(library_id, relative_path)");
 
   db.exec(`
