@@ -60,9 +60,9 @@ Library_Root/
 1. 推送代码到 GitHub。
 2. GitHub Actions 构建镜像并推送到 GHCR。
 3. NAS 使用 `docker-compose.yml` 启动服务。
-4. NAS 上安装 Watchtower，自动拉取 `ghcr.io/<owner>/hilihili-player:latest`。
+4. NAS 上安装 Watchtower，自动拉取 Web 与后端镜像的新版本。
 
-镜像名必须全小写；本仓库默认镜像为 `ghcr.io/eray114514/hilihili-player:latest`。NAS 不需要把 Docker 默认镜像源改成 GHCR，镜像地址里的 `ghcr.io` 会让 Docker 直接从 GitHub Container Registry 拉取。仓库和 package 如果保持私有，需要先在 NAS 上执行一次：
+镜像名必须全小写；本仓库发布 `ghcr.io/eray114514/hilihili-player:web` 与 `ghcr.io/eray114514/hilihili-player:backend` 两个标签，`docker-compose.yml` 会分别用于 Web 和 API/Worker。NAS 不需要把 Docker 默认镜像源改成 GHCR，镜像地址里的 `ghcr.io` 会让 Docker 直接从 GitHub Container Registry 拉取。仓库和 package 如果保持私有，需要先在 NAS 上执行一次：
 
 ```bash
 docker login ghcr.io -u Eray114514
