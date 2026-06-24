@@ -83,3 +83,38 @@ test("scanner creates posts, galleries and stable playable items", async () => {
   assert.equal(await scanLibrary(libraryId), 3);
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_items").get() as { count: number }).count, 3, "deleted files must be removed from the index");
 });
+
+test("scanner replaces legacy child parts when grouping a folder", async () => {
+  const root = join(sandbox, "legacy-library");
+  const folder = join(root, "_待归类", "旧版散列目录");
+  const videoPath = join(folder, "P1.mp4");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(videoPath, "legacy-video");
+  writeFileSync(join(folder, "P1.zh.srt"), "1\n00:00:00,000 --> 00:00:01,000\n字幕\n");
+
+  const db = getSqlite();
+  const libraryId = createId("lib");
+  const categoryId = createId("cat");
+  const creatorId = createId("up");
+  const itemId = createId("item");
+  const partId = createId("part");
+  const now = nowIso();
+  db.prepare("INSERT INTO libraries (id, name, root_path, enabled, created_at) VALUES (?, ?, ?, 1, ?)").run(libraryId, "旧版测试库", root, now);
+  db.prepare("INSERT INTO categories (id, name, library_id, created_at) VALUES (?, ?, ?, ?)").run(categoryId, "待归类", libraryId, now);
+  db.prepare("INSERT INTO creators (id, name, category_id, created_at) VALUES (?, ?, ?, ?)").run(creatorId, "未知UP", categoryId, now);
+  db.prepare(`
+    INSERT INTO media_items (
+      id, kind, title, library_id, category_id, creator_id, source_path, relative_path,
+      folder_path, fingerprint, thumbnail_status, file_modified_at, hidden, structure_status, first_seen_at, updated_at
+    ) VALUES (?, 'video', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, 'fallback', ?, ?)
+  `).run(itemId, "旧版单文件条目", libraryId, categoryId, creatorId, videoPath, "_待归类/旧版散列目录/P1.mp4", folder, "legacy-item-fingerprint", now, now, now);
+  db.prepare(`
+    INSERT INTO media_parts (id, item_id, title, part_index, path, size_bytes, fingerprint)
+    VALUES (?, ?, ?, 1, ?, ?, ?)
+  `).run(partId, itemId, "P1", videoPath, 12, "legacy-part-fingerprint");
+
+  assert.equal(await scanLibrary(libraryId), 1);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_items WHERE library_id = ?").get(libraryId) as { count: number }).count, 1);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_parts WHERE path = ?").get(videoPath) as { count: number }).count, 1);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_subtitles WHERE path = ?").get(join(folder, "P1.zh.srt")) as { count: number }).count, 1);
+});

@@ -454,6 +454,7 @@ function indexMultiPartVideo(
   const fingerprint = stableHash(`multi:${partFingerprints}`);
   const coverPath = findCover(folderPath);
   const modifiedAt = new Date(Math.max(...videos.map((path) => statSync(path).mtimeMs))).toISOString();
+  clearLegacyChildren(db, library.id, folderPath);
   const itemId = upsertMediaItem(db, {
     kind: "video",
     title,
