@@ -1,9 +1,10 @@
 "use client";
 
-import { AlertTriangle, FastForward, LoaderCircle, Maximize, Minimize, Pause, Play, Rewind, Volume2, VolumeX } from "lucide-react";
+import { AlertTriangle, FastForward, LoaderCircle, Maximize, Minimize, Pause, Play, Rewind, Subtitles, Volume2, VolumeX } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiUrl, assetUrl, postJson } from "@/lib/api";
 import type { PartDetail } from "@/lib/api";
+import { findActiveCue, parseSubtitle, type SubtitleCue } from "@/lib/subtitles";
 
 type VideoPlayerProps = {
   itemId: string;
@@ -14,6 +15,8 @@ type VideoPlayerProps = {
 };
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
+
+type SubtitleMode = "chinese" | "bilingual";
 
 export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = false, onEnded }: VideoPlayerProps) {
   const shellRef = useRef<HTMLDivElement>(null);
@@ -49,6 +52,16 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const [prevPartId, setPrevPartId] = useState<string | null>(null);
   const [mediaError, setMediaError] = useState(false);
 
+  const [subtitleTracks, setSubtitleTracks] = useState<Map<string, SubtitleCue[]>>(new Map());
+  const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
+  const [subtitleMode, setSubtitleMode] = useState<SubtitleMode>("bilingual");
+  const [subtitlePosition, setSubtitlePosition] = useState<"bottom" | "top">("bottom");
+  const [subtitleMenuOpen, setSubtitleMenuOpen] = useState(false);
+  const [subtitleCues, setSubtitleCues] = useState<{ zh: SubtitleCue | null; ko: SubtitleCue | null }>({ zh: null, ko: null });
+
+  const hasSubtitles = part && part.subtitles.length > 0;
+  const showSubtitles = !!hasSubtitles && subtitlesEnabled;
+
   const spriteUrl = useMemo(() => {
     if (!part?.previewSpritePath) return null;
     return assetUrl(`/media/parts/${part.id}/sprite`);
@@ -76,15 +89,63 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     setHoverTime(null);
     setSpriteLoaded(false);
     setMediaError(false);
+    setSubtitleTracks(new Map());
+    setSubtitleCues({ zh: null, ko: null });
+    setSubtitlesEnabled(part.subtitles.length > 0);
+    setSubtitleMode(part.subtitles.some((track) => track.language === "ko") ? "bilingual" : "chinese");
   }
+
+  const updateSubtitleCues = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const time = video.currentTime;
+    setSubtitleCues({
+      zh: findActiveCue(subtitleTracks.get("zh") ?? [], time),
+      ko: findActiveCue(subtitleTracks.get("ko") ?? [], time)
+    });
+  }, [subtitleTracks]);
+
+  useEffect(() => {
+    if (!part || part.subtitles.length === 0) return;
+
+    let ignore = false;
+    const load = async () => {
+      const map = new Map<string, SubtitleCue[]>();
+      for (const track of part.subtitles) {
+        const url = assetUrl(track.url);
+        if (!url) continue;
+        try {
+          const response = await fetch(url);
+          if (!response.ok) continue;
+          const text = await response.text();
+          const cues = parseSubtitle(text);
+          map.set(track.language, cues);
+        } catch {
+          console.warn(`[player] failed to load subtitle: ${url}`);
+        }
+      }
+      if (!ignore) {
+        setSubtitleTracks(map);
+        const video = videoRef.current;
+        if (video) {
+          setSubtitleCues({
+            zh: findActiveCue(map.get("zh") ?? [], video.currentTime),
+            ko: findActiveCue(map.get("ko") ?? [], video.currentTime)
+          });
+        }
+      }
+    };
+    void load();
+    return () => { ignore = true; };
+  }, [part]);
 
   const showControls = useCallback(() => {
     setControlsVisible(true);
     if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
     hideTimerRef.current = window.setTimeout(() => {
-      if (!speedMenuOpen) setControlsVisible(false);
+      if (!speedMenuOpen && !subtitleMenuOpen) setControlsVisible(false);
     }, 2600);
-  }, [speedMenuOpen]);
+  }, [speedMenuOpen, subtitleMenuOpen]);
 
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
@@ -261,6 +322,10 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const bufferedPct = duration > 0 ? (buffered / duration) * 100 : 0;
   const hoverPct = hoverRatio * 100;
 
+  const subtitlePositionClasses = subtitlePosition === "bottom"
+    ? isFullscreen ? "bottom-12 justify-end" : "bottom-[5.5rem] justify-end"
+    : isFullscreen ? "top-4 justify-start" : "top-6 justify-start";
+
   return (
     <section
       ref={shellRef}
@@ -279,6 +344,20 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         if (event.key.toLowerCase() === "m") { event.preventDefault(); setMuted((v) => !v); }
         if (event.key === "ArrowUp") { event.preventDefault(); setVolume((v) => Math.min(1, v + 0.1)); }
         if (event.key === "ArrowDown") { event.preventDefault(); setVolume((v) => Math.max(0, v - 0.1)); }
+        if (event.key.toLowerCase() === "c") {
+          event.preventDefault();
+          if (hasSubtitles) {
+            setSubtitlesEnabled((v) => !v);
+            showControls();
+          }
+        }
+        if (event.key.toLowerCase() === "v") {
+          event.preventDefault();
+          if (hasSubtitles) {
+            setSubtitleMode((mode) => mode === "chinese" ? "bilingual" : "chinese");
+            showControls();
+          }
+        }
       }}
     >
       <div
@@ -340,6 +419,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
           onTimeUpdate={(event) => {
             const video = event.currentTarget;
             setCurrent(video.currentTime);
+            updateSubtitleCues();
             latestProgressRef.current = { partId, positionSeconds: video.currentTime, durationSeconds: video.duration || duration };
             if (isLastPart && video.duration > 0 && video.currentTime >= video.duration * 0.9 && completionSentRef.current !== partId) {
               completionSentRef.current = partId;
@@ -377,6 +457,23 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         <button className="absolute left-1/2 top-1/2 grid h-16 w-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-white/92 text-black shadow-xl transition hover:scale-105" onClick={togglePlay} aria-label="播放">
           <Play className="ml-1" size={28} fill="currentColor" />
         </button>
+      ) : null}
+
+      {showSubtitles ? (
+        <div
+          className={`pointer-events-none absolute inset-x-0 z-10 flex flex-col items-center px-4 text-center sm:px-8 ${subtitlePositionClasses}`}
+        >
+          {subtitleCues.zh ? (
+            <div className="max-w-[90%] rounded bg-black/70 px-3 py-1 text-base font-medium leading-snug text-white shadow-lg [text-shadow:0_1px_2px_rgba(0,0,0,.8)]">
+              {subtitleCues.zh.text}
+            </div>
+          ) : null}
+          {subtitleMode === "bilingual" && subtitleCues.ko ? (
+            <div className="mt-1.5 max-w-[85%] rounded bg-black/60 px-2 py-0.5 text-xs leading-snug text-white/90 shadow-md [text-shadow:0_1px_2px_rgba(0,0,0,.8)]">
+              {subtitleCues.ko.text}
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       <div
@@ -478,6 +575,58 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
           </span>
 
           <div className="ml-auto flex items-center gap-0.5">
+            {hasSubtitles ? (
+              <div className="relative">
+                <button
+                  className={`player-btn ${!subtitlesEnabled ? "text-white/40" : subtitleMode === "chinese" ? "text-[var(--accent)]" : ""}`}
+                  onClick={() => setSubtitleMenuOpen((v) => !v)}
+                  aria-label="字幕"
+                >
+                  <Subtitles size={18} />
+                </button>
+                {subtitleMenuOpen ? (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setSubtitleMenuOpen(false)} />
+                    <div className="absolute bottom-full right-0 z-20 mb-1 w-40 overflow-hidden rounded-lg border border-white/10 bg-[#1a1c22] py-1 shadow-xl">
+                      <button
+                        className="flex w-full items-center justify-between px-3 py-1.5 text-sm text-white/70 hover:bg-white/8 hover:text-white"
+                        onClick={() => { setSubtitlesEnabled((v) => !v); setSubtitleMenuOpen(false); showControls(); }}
+                      >
+                        <span>{subtitlesEnabled ? "关闭字幕" : "开启字幕"}</span>
+                        {subtitlesEnabled ? <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" /> : null}
+                      </button>
+                      <div className="my-1 h-px bg-white/10" />
+                      <button
+                        className={`flex w-full items-center px-3 py-1.5 text-sm transition ${subtitleMode === "chinese" ? "text-[var(--accent)]" : "text-white/70 hover:bg-white/8 hover:text-white"}`}
+                        onClick={() => { setSubtitleMode("chinese"); setSubtitlesEnabled(true); setSubtitleMenuOpen(false); showControls(); }}
+                      >
+                        仅中文
+                      </button>
+                      <button
+                        className={`flex w-full items-center px-3 py-1.5 text-sm transition ${subtitleMode === "bilingual" ? "text-[var(--accent)]" : "text-white/70 hover:bg-white/8 hover:text-white"}`}
+                        onClick={() => { setSubtitleMode("bilingual"); setSubtitlesEnabled(true); setSubtitleMenuOpen(false); showControls(); }}
+                      >
+                        中韩双语
+                      </button>
+                      <div className="my-1 h-px bg-white/10" />
+                      <button
+                        className={`flex w-full items-center px-3 py-1.5 text-sm transition ${subtitlePosition === "bottom" ? "text-[var(--accent)]" : "text-white/70 hover:bg-white/8 hover:text-white"}`}
+                        onClick={() => { setSubtitlePosition("bottom"); setSubtitleMenuOpen(false); showControls(); }}
+                      >
+                        底部显示
+                      </button>
+                      <button
+                        className={`flex w-full items-center px-3 py-1.5 text-sm transition ${subtitlePosition === "top" ? "text-[var(--accent)]" : "text-white/70 hover:bg-white/8 hover:text-white"}`}
+                        onClick={() => { setSubtitlePosition("top"); setSubtitleMenuOpen(false); showControls(); }}
+                      >
+                        顶部显示
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+
             <div className="relative">
               <button
                 className="player-btn min-w-[2.75rem] px-2 text-sm font-medium"
