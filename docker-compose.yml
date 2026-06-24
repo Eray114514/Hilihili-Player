@@ -1,6 +1,6 @@
 services:
   api:
-    image: ghcr.io/${GHCR_OWNER:-eray114514}/hilihili-player:latest
+    image: ghcr.io/eray114514/hilihili-player:latest
     command: pnpm --filter @hilihili/api start
     environment:
       HILI_API_HOST: 0.0.0.0
@@ -10,27 +10,27 @@ services:
       - "4141:4141"
     volumes:
       - hilihili-data:/data
-      - ${HILI_MEDIA_ROOT:-./media}:/media:ro
+      - /volume1:/volume1
     restart: unless-stopped
 
   worker:
-    image: ghcr.io/${GHCR_OWNER:-eray114514}/hilihili-player:latest
+    image: ghcr.io/eray114514/hilihili-player:latest
     command: pnpm --filter @hilihili/worker start
     environment:
       HILI_DATA_DIR: /data
       HILI_SCAN_INTERVAL_MS: 900000
     volumes:
       - hilihili-data:/data
-      - ${HILI_MEDIA_ROOT:-./media}:/media:ro
+      - /volume1:/volume1
     restart: unless-stopped
 
   web:
-    image: ghcr.io/${GHCR_OWNER:-eray114514}/hilihili-player:latest
+    image: ghcr.io/eray114514/hilihili-player:latest
     command: pnpm --filter @hilihili/web start
     environment:
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:4141
+      NEXT_PUBLIC_API_BASE_URL: http://192.168.2.100:4141
     ports:
-      - "3000:3000"
+      - "3001:3000"
     depends_on:
       - api
     restart: unless-stopped
