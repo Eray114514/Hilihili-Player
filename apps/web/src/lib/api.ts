@@ -1,6 +1,16 @@
 import type { DirectoryEntry, FeedItem, Library, Reaction, ScanRun, ThumbnailStatus } from "@hilihili/shared";
 
-export const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4141";
+function getApiBase() {
+  if (typeof window !== "undefined") {
+    // 浏览器端：使用当前页面的 host，API 端口固定为 4141
+    const { protocol, hostname } = window.location;
+    return `${protocol}//${hostname}:4141`;
+  }
+  // 服务端渲染：通过环境变量访问 API（Docker Compose 网络内使用服务名）
+  return process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4141";
+}
+
+export const apiBase = getApiBase();
 
 export function apiUrl(path: string) {
   return `${apiBase}${path}`;

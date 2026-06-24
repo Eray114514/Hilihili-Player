@@ -28,7 +28,7 @@ services:
     image: ghcr.io/eray114514/hilihili-player:latest
     command: pnpm --filter @hilihili/web start
     environment:
-      NEXT_PUBLIC_API_BASE_URL: http://192.168.2.100:4141
+      API_BASE_URL: http://api:4141
     ports:
       - "3001:3000"
     depends_on:
