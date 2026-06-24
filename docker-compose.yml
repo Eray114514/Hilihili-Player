@@ -21,6 +21,7 @@ services:
     environment:
       HILI_DATA_DIR: /data
       HILI_SCAN_INTERVAL_MS: 900000
+      HILI_WATCH_MEDIA: "true"
     volumes:
       - hilihili-data:/data
       - /volume1/@home/Eray:/volume1/Eray

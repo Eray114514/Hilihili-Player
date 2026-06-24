@@ -1,6 +1,6 @@
 "use client";
 
-import { FastForward, LoaderCircle, Maximize, Minimize, Pause, Play, Rewind, Volume2, VolumeX } from "lucide-react";
+import { AlertTriangle, FastForward, LoaderCircle, Maximize, Minimize, Pause, Play, Rewind, Volume2, VolumeX } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiUrl, assetUrl, postJson } from "@/lib/api";
 import type { PartDetail } from "@/lib/api";
@@ -43,6 +43,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
   const [hoverLeftPx, setHoverLeftPx] = useState(0);
   const [spriteLoaded, setSpriteLoaded] = useState(false);
   const [prevPartId, setPrevPartId] = useState<string | null>(null);
+  const [mediaError, setMediaError] = useState(false);
 
   const spriteUrl = useMemo(() => {
     if (!part?.previewSpritePath) return null;
@@ -70,6 +71,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
     setAutoPlayBlocked(false);
     setHoverTime(null);
     setSpriteLoaded(false);
+    setMediaError(false);
   }
 
   const showControls = useCallback(() => {
@@ -321,10 +323,16 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, onEnded }: Video
             }
           }}
           onEnded={markFinished}
+          onError={() => { setBuffering(false); setPlaying(false); setMediaError(true); }}
         />
       </div>
 
-      {buffering && !holdingFast ? (
+      {mediaError ? (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 flex w-[min(90%,28rem)] -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-3 rounded-xl bg-black/80 p-5 text-center text-sm text-white/75">
+          <AlertTriangle size={32} className="text-amber-400" />
+          <span>{part.compatibilityStatus === "failed" ? "该视频转换失败，请检查 worker 日志或源文件是否损坏。" : "浏览器无法加载该视频，请重新扫描媒体库后再试。"}</span>
+        </div>
+      ) : buffering && !holdingFast ? (
         <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
           <LoaderCircle className="animate-spin text-white/80" size={42} />
         </div>

@@ -58,6 +58,7 @@ function migrate(db: Database.Database) {
     CREATE TABLE IF NOT EXISTS creators (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      alias TEXT,
       category_id TEXT REFERENCES categories(id),
       created_at TEXT NOT NULL,
       UNIQUE(category_id, name)
@@ -66,6 +67,7 @@ function migrate(db: Database.Database) {
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
       title TEXT NOT NULL,
+      post_body TEXT,
       library_id TEXT NOT NULL REFERENCES libraries(id),
       category_id TEXT REFERENCES categories(id),
       creator_id TEXT REFERENCES creators(id),
@@ -88,6 +90,17 @@ function migrate(db: Database.Database) {
       size_bytes INTEGER NOT NULL,
       duration_seconds REAL,
       fingerprint TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS media_images (
+      id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      path TEXT NOT NULL UNIQUE,
+      sort_index INTEGER NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      width INTEGER,
+      height INTEGER,
+      fingerprint TEXT NOT NULL,
+      thumbnail_path TEXT
     );
     CREATE TABLE IF NOT EXISTS tags (
       id TEXT PRIMARY KEY,
@@ -143,11 +156,13 @@ function migrate(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS media_items_category_idx ON media_items(category_id);
     CREATE INDEX IF NOT EXISTS media_items_creator_idx ON media_items(creator_id);
     CREATE INDEX IF NOT EXISTS media_parts_item_idx ON media_parts(item_id);
+    CREATE INDEX IF NOT EXISTS media_images_item_idx ON media_images(item_id);
     CREATE INDEX IF NOT EXISTS interactions_target_idx ON interactions(target_type, target_id);
     CREATE INDEX IF NOT EXISTS comments_item_idx ON comments(item_id);
   `);
 
   ensureColumn(db, "media_items", "generated_cover_path", "TEXT");
+  ensureColumn(db, "media_items", "post_body", "TEXT");
   ensureColumn(db, "media_items", "thumbnail_status", "TEXT NOT NULL DEFAULT 'pending'");
   ensureColumn(db, "media_items", "thumbnail_error", "TEXT");
   ensureColumn(db, "media_items", "content_published_at", "TEXT");
@@ -161,6 +176,12 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "media_parts", "preview_sprite_interval", "REAL");
   ensureColumn(db, "media_parts", "preview_thumb_w", "INTEGER");
   ensureColumn(db, "media_parts", "preview_thumb_h", "INTEGER");
+  ensureColumn(db, "media_parts", "stream_path", "TEXT");
+  ensureColumn(db, "media_parts", "stream_size_bytes", "INTEGER");
+  ensureColumn(db, "media_parts", "compatibility_status", "TEXT NOT NULL DEFAULT 'pending'");
+  ensureColumn(db, "media_parts", "compatibility_error", "TEXT");
+  ensureColumn(db, "creators", "alias", "TEXT");
+  db.exec("CREATE INDEX IF NOT EXISTS media_items_library_relative_idx ON media_items(library_id, relative_path)");
 }
 
 function ensureColumn(db: Database.Database, table: string, column: string, definition: string) {

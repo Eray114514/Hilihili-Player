@@ -1,7 +1,7 @@
 export const videoExtensions = [".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".flv"] as const;
 export const imageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"] as const;
 
-export type MediaKind = "video" | "image";
+export type MediaKind = "video" | "image" | "post";
 export type InteractionKind = "like" | "dislike" | "watch" | "finish" | "blacklist_up";
 export type StructureStatus = "standard" | "fallback";
 export type ThumbnailStatus = "pending" | "ready" | "failed";
@@ -13,13 +13,28 @@ export type FeedItem = {
   kind: MediaKind;
   title: string;
   categoryName: string;
+  creatorId: string | null;
   creatorName: string;
+  creatorAlias: string | null;
   coverUrl: string | null;
   thumbnailStatus: ThumbnailStatus;
   firstSeenAt: string;
   displayDate: string;
+  postExcerpt: string | null;
+  playable: boolean;
+  previewPartId: string | null;
+  imageCount: number;
+  previewImages: FeedImage[];
   score?: number;
   partCount?: number;
+};
+
+export type FeedImage = {
+  id: string;
+  width: number | null;
+  height: number | null;
+  thumbnailUrl: string;
+  originalUrl: string;
 };
 
 export type MediaPart = {

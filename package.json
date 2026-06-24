@@ -13,8 +13,13 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
+    "test": "pnpm --filter @hilihili/media test",
     "db:push": "pnpm --filter @hilihili/db db:push",
     "clean": "pnpm -r clean"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "typescript-eslint": "^8.46.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

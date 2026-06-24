@@ -26,6 +26,7 @@ export const creators = sqliteTable(
   {
     id: text("id").primaryKey(),
     name: text("name").notNull(),
+    alias: text("alias"),
     categoryId: text("category_id").references(() => categories.id),
     createdAt: text("created_at").notNull()
   },
@@ -38,8 +39,9 @@ export const mediaItems = sqliteTable(
   "media_items",
   {
     id: text("id").primaryKey(),
-    kind: text("kind", { enum: ["video", "image"] }).notNull(),
+    kind: text("kind", { enum: ["video", "image", "post"] }).notNull(),
     title: text("title").notNull(),
+    postBody: text("post_body"),
     libraryId: text("library_id").notNull().references(() => libraries.id),
     categoryId: text("category_id").references(() => categories.id),
     creatorId: text("creator_id").references(() => creators.id),
@@ -66,6 +68,25 @@ export const mediaItems = sqliteTable(
   })
 );
 
+export const mediaImages = sqliteTable(
+  "media_images",
+  {
+    id: text("id").primaryKey(),
+    itemId: text("item_id").notNull().references(() => mediaItems.id),
+    path: text("path").notNull(),
+    sortIndex: integer("sort_index").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    width: integer("width"),
+    height: integer("height"),
+    fingerprint: text("fingerprint").notNull(),
+    thumbnailPath: text("thumbnail_path")
+  },
+  (table) => ({
+    byItem: index("media_images_item_idx").on(table.itemId),
+    byPath: uniqueIndex("media_images_path_idx").on(table.path)
+  })
+);
+
 export const mediaParts = sqliteTable(
   "media_parts",
   {
@@ -75,6 +96,10 @@ export const mediaParts = sqliteTable(
     partIndex: integer("part_index").notNull(),
     path: text("path").notNull(),
     sizeBytes: integer("size_bytes").notNull(),
+    streamPath: text("stream_path"),
+    streamSizeBytes: integer("stream_size_bytes"),
+    compatibilityStatus: text("compatibility_status", { enum: ["pending", "ready", "failed"] }).notNull().default("pending"),
+    compatibilityError: text("compatibility_error"),
     durationSeconds: real("duration_seconds"),
     fingerprint: text("fingerprint").notNull(),
     previewSpritePath: text("preview_sprite_path"),

@@ -121,7 +121,7 @@ app.get<{ Querystring: { seed?: string; limit?: string; sort?: string; kind?: st
     seed: request.query.seed ?? "dynamic",
     limit: Number(request.query.limit ?? 36),
     includeImages: request.query.kind !== "video",
-    kind: request.query.kind === "image" ? "image" : request.query.kind === "video" ? "video" : undefined,
+    kind: request.query.kind === "image" ? "image" : request.query.kind === "video" ? "video" : request.query.kind === "post" ? "post" : undefined,
     includeFinished: true,
     mode: request.query.sort === "oldest" ? "oldest" : request.query.sort === "random" ? "shuffle" : "latest"
   })
@@ -157,7 +157,7 @@ app.get("/categories", async () => ({
 
 app.get("/creators", async () => ({
   creators: db.prepare(`
-    SELECT cr.id, cr.name, c.name AS categoryName, COUNT(mi.id) AS itemCount
+    SELECT cr.id, cr.name, cr.alias, c.name AS categoryName, COUNT(mi.id) AS itemCount
     FROM creators cr
     LEFT JOIN categories c ON c.id = cr.category_id
     LEFT JOIN media_items mi ON mi.creator_id = cr.id
@@ -168,7 +168,7 @@ app.get("/creators", async () => ({
 
 app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
   const item = db.prepare(`
-    SELECT mi.*, c.name AS categoryName, cr.name AS creatorName,
+    SELECT mi.*, c.name AS categoryName, cr.name AS creatorName, cr.alias AS creatorAlias,
       ip.reaction, COALESCE(cp.blacklisted, 0) AS creatorBlacklisted,
       wp.part_id AS resumePartId, wp.position_seconds AS resumePositionSeconds
     FROM media_items mi
@@ -186,6 +186,8 @@ app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
   const parts = db.prepare(`
     SELECT id, title, part_index AS partIndex, size_bytes AS sizeBytes,
       duration_seconds AS durationSeconds,
+      compatibility_status AS compatibilityStatus,
+      compatibility_error AS compatibilityError,
       preview_sprite_path AS previewSpritePath,
       preview_sprite_cols AS previewSpriteCols,
       preview_sprite_rows AS previewSpriteRows,
@@ -196,9 +198,39 @@ app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
   `).all(request.params.id);
   const comments = db.prepare("SELECT id, body, at_seconds AS atSeconds, created_at AS createdAt FROM comments WHERE item_id = ? ORDER BY created_at DESC")
     .all(request.params.id);
+  const images = db.prepare(`
+    SELECT id, sort_index AS sortIndex, width, height
+    FROM media_images WHERE item_id = ? ORDER BY sort_index ASC
+  `).all(request.params.id) as { id: string; sortIndex: number; width: number | null; height: number | null }[];
+  const imageAssets = images.map((image) => ({
+    ...image,
+    thumbnailUrl: `/media/images/${image.id}/thumbnail`,
+    originalUrl: `/media/images/${image.id}/original`
+  }));
+  const tags = db.prepare(`
+    SELECT t.name FROM media_tags mt JOIN tags t ON t.id = mt.tag_id
+    WHERE mt.media_item_id = ? ORDER BY t.name ASC
+  `).all(request.params.id) as { name: string }[];
   const related = getRecommendedFeed({ limit: 12, seed: request.params.id, includeFinished: false, excludeId: request.params.id });
 
-  return { item, parts, comments, related };
+  return { item, parts, images: imageAssets, tags: tags.map((tag) => tag.name), comments, related };
+});
+
+app.get<{ Params: { id: string; variant: string } }>("/media/images/:id/:variant", async (request, reply) => {
+  if (request.params.variant !== "thumbnail" && request.params.variant !== "original") {
+    return reply.code(404).send({ error: "Image variant not found" });
+  }
+  const row = db.prepare("SELECT path, thumbnail_path FROM media_images WHERE id = ?").get(request.params.id) as
+    | { path: string; thumbnail_path: string | null }
+    | undefined;
+  const selected = request.params.variant === "thumbnail" && row?.thumbnail_path && existsSync(row.thumbnail_path)
+    ? row.thumbnail_path
+    : row?.path && existsSync(row.path) ? row.path : null;
+  if (!selected) return reply.code(404).send({ error: "Image not found" });
+  reply.header("Content-Type", lookup(selected) || "application/octet-stream");
+  reply.header("Cache-Control", "public, max-age=604800");
+  reply.header("X-Content-Type-Options", "nosniff");
+  return reply.send(createReadStream(selected));
 });
 
 app.get<{ Params: { id: string } }>("/media/items/:id/cover", async (request, reply) => {
@@ -255,14 +287,17 @@ app.put<{ Params: { id: string }; Body: { blacklisted?: boolean } }>("/creators/
 });
 
 app.get<{ Params: { id: string }; Headers: { range?: string } }>("/media/parts/:id/stream", async (request, reply) => {
-  const row = db.prepare("SELECT path, size_bytes FROM media_parts WHERE id = ?").get(request.params.id) as { path: string; size_bytes: number } | undefined;
+  const row = db.prepare("SELECT path, size_bytes, stream_path, stream_size_bytes FROM media_parts WHERE id = ?").get(request.params.id) as
+    | { path: string; size_bytes: number; stream_path: string | null; stream_size_bytes: number | null }
+    | undefined;
   if (!row || !existsSync(row.path)) {
     return reply.code(404).send({ error: "Media part not found" });
   }
 
-  const total = row.size_bytes;
+  const mediaPath = row.stream_path && existsSync(row.stream_path) ? row.stream_path : row.path;
+  const total = statSync(mediaPath).size;
   const range = request.headers.range;
-  const contentType = lookup(extname(row.path)) || "application/octet-stream";
+  const contentType = lookup(extname(mediaPath)) || "application/octet-stream";
 
   reply.header("Accept-Ranges", "bytes");
   reply.header("Cache-Control", "public, max-age=3600");
@@ -272,7 +307,7 @@ app.get<{ Params: { id: string }; Headers: { range?: string } }>("/media/parts/:
   if (!range) {
     reply.header("Content-Length", total);
     reply.header("Content-Type", contentType);
-    return reply.send(createReadStream(row.path));
+    return reply.send(createReadStream(mediaPath));
   }
 
   const match = range.match(/bytes=(\d+)-(\d*)/);
@@ -291,7 +326,7 @@ app.get<{ Params: { id: string }; Headers: { range?: string } }>("/media/parts/:
   reply.header("Content-Range", `bytes ${start}-${end}/${total}`);
   reply.header("Content-Length", chunkSize);
   reply.header("Content-Type", contentType);
-  return reply.send(createReadStream(row.path, { start, end }));
+  return reply.send(createReadStream(mediaPath, { start, end }));
 });
 
 app.post<{ Params: { id: string }; Body: InteractionBody }>("/items/:id/interactions", async (request, reply) => {

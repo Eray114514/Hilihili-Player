@@ -1,10 +1,11 @@
 import { getSqlite } from "@hilihili/db";
-import type { FeedItem } from "@hilihili/shared";
+import type { FeedItem, MediaKind } from "@hilihili/shared";
 
 type CandidateRow = {
   id: string;
-  kind: "video" | "image";
+  kind: MediaKind;
   title: string;
+  post_body: string | null;
   creator_id: string | null;
   category_id: string | null;
   first_seen_at: string;
@@ -15,7 +16,9 @@ type CandidateRow = {
   thumbnail_status: "pending" | "ready" | "failed";
   category_name: string | null;
   creator_name: string | null;
+  creator_alias: string | null;
   part_count: number;
+  preview_part_id: string | null;
   finished: number | null;
   creator_blacklisted: number;
 };
@@ -27,7 +30,7 @@ export type FeedOptions = {
   creatorId?: string;
   includeImages?: boolean;
   includeFinished?: boolean;
-  kind?: "video" | "image";
+  kind?: MediaKind;
   excludeId?: string;
   mode?: "recommended" | "latest" | "oldest" | "shuffle";
 };
@@ -39,7 +42,7 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
   const filters = ["mi.hidden = 0"];
 
   if (!options.includeImages) {
-    filters.push("mi.kind = 'video'");
+    filters.push("(mi.kind = 'video' OR (mi.kind = 'post' AND EXISTS (SELECT 1 FROM media_parts playable WHERE playable.item_id = mi.id)))");
   }
   if (options.kind) {
     filters.push("mi.kind = ?");
@@ -63,11 +66,11 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
 
   const rows = db.prepare(`
     SELECT
-      mi.id, mi.kind, mi.title, mi.creator_id, mi.category_id, mi.first_seen_at,
+      mi.id, mi.kind, mi.title, mi.post_body, mi.creator_id, mi.category_id, mi.first_seen_at,
       mi.content_published_at, mi.file_modified_at, mi.cover_path, mi.generated_cover_path, mi.thumbnail_status,
       c.name AS category_name,
-      cr.name AS creator_name,
-      COALESCE(pc.part_count, 0) AS part_count,
+      cr.name AS creator_name, cr.alias AS creator_alias,
+      COALESCE(pc.part_count, 0) AS part_count, pc.preview_part_id,
       wp.finished,
       CASE WHEN EXISTS (
         SELECT 1 FROM interactions i
@@ -81,7 +84,9 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
     LEFT JOIN creators cr ON cr.id = mi.creator_id
     LEFT JOIN watch_progress wp ON wp.item_id = mi.id
     LEFT JOIN (
-      SELECT item_id, COUNT(*) AS part_count FROM media_parts GROUP BY item_id
+      SELECT item_id, COUNT(*) AS part_count,
+        MAX(CASE WHEN part_index = 1 THEN id END) AS preview_part_id
+      FROM media_parts GROUP BY item_id
     ) pc ON pc.item_id = mi.id
     WHERE ${filters.join(" AND ")}
   `).all(...params) as CandidateRow[];
@@ -101,7 +106,7 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
         ? scored.sort((a, b) => seededRandom(`${options.seed}:${a.row.id}`) - seededRandom(`${options.seed}:${b.row.id}`))
         : scored.sort((a, b) => b.score - a.score);
 
-  return sorted.slice(0, limit).map(({ row, score }) => toFeedItem(row, score));
+  return sorted.slice(0, limit).map(({ row, score }) => toFeedItem(db, row, score));
 }
 
 function scoreCandidate(db: ReturnType<typeof getSqlite>, row: CandidateRow, seed = "home") {
@@ -149,20 +154,40 @@ function tagInteractionWeight(db: ReturnType<typeof getSqlite>, itemId: string) 
   return rows.reduce((score, row) => row.kind === "like" ? score + row.value : score - row.value, 0);
 }
 
-function toFeedItem(row: CandidateRow, score: number): FeedItem {
+function toFeedItem(db: ReturnType<typeof getSqlite>, row: CandidateRow, score: number): FeedItem {
+  const previewImages = db.prepare(`
+    SELECT id, width, height FROM media_images WHERE item_id = ? ORDER BY sort_index ASC LIMIT 9
+  `).all(row.id) as { id: string; width: number | null; height: number | null }[];
+  const imageCount = (db.prepare("SELECT COUNT(*) AS count FROM media_images WHERE item_id = ?").get(row.id) as { count: number }).count;
   return {
     id: row.id,
     kind: row.kind,
     title: row.title,
     categoryName: row.category_name ?? "未归类",
+    creatorId: row.creator_id,
     creatorName: row.creator_name ?? "未知UP",
+    creatorAlias: row.creator_alias,
     coverUrl: row.cover_path || row.generated_cover_path ? `/media/items/${row.id}/cover` : null,
     thumbnailStatus: row.thumbnail_status,
     firstSeenAt: row.first_seen_at,
     displayDate: row.content_published_at ?? row.file_modified_at ?? row.first_seen_at,
+    postExcerpt: row.post_body ? excerpt(row.post_body) : null,
+    playable: row.part_count > 0,
+    previewPartId: row.preview_part_id,
+    imageCount,
+    previewImages: previewImages.map((image) => ({
+      ...image,
+      thumbnailUrl: `/media/images/${image.id}/thumbnail`,
+      originalUrl: `/media/images/${image.id}/original`
+    })),
     partCount: row.part_count,
     score
   };
+}
+
+function excerpt(value: string) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > 220 ? `${normalized.slice(0, 220)}…` : normalized;
 }
 
 function seededRandom(input: string) {

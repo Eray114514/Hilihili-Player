@@ -5,24 +5,32 @@ import Link from "next/link";
 import { useState } from "react";
 import type { FeedItem } from "@hilihili/shared";
 import { assetUrl } from "@/lib/api";
+import { ApiImage } from "@/components/ApiImage";
+import { VideoPreview } from "@/components/VideoPreview";
 
 export function VideoCard({ item, eager = false }: { item: FeedItem; eager?: boolean }) {
   const cover = assetUrl(item.coverUrl);
-  const [imageFailed, setImageFailed] = useState(false);
-  const showCover = cover && !imageFailed;
 
   return (
-    <Link href={item.kind === "video" ? `/watch/${item.id}` : `/dynamic?item=${item.id}`} className="group block min-w-0">
+    <Link href={item.playable ? `/watch/${item.id}` : `/dynamic/${item.id}`} className="group block min-w-0">
       <div className="relative aspect-video overflow-hidden rounded-lg bg-[#1a1b20] ring-1 ring-white/8">
-        {showCover ? (
-          <img
+        {item.playable ? (
+          <VideoPreview
+            previewPartId={item.previewPartId}
+            posterUrl={cover}
+            alt={item.title}
+            priority={eager}
+            sizes="(min-width: 1536px) 16vw, (min-width: 768px) 25vw, 50vw"
+            fallback={<div className="grid h-full place-items-center bg-[linear-gradient(135deg,#24252b,#15161b_55%,#2b2020)] text-white/40">{item.thumbnailStatus === "pending" ? <LoaderCircle className="animate-spin" size={28} /> : <Play size={34} />}</div>}
+          />
+        ) : cover ? (
+          <ApiImage
             src={cover}
             alt={item.title}
-            loading={eager ? "eager" : "lazy"}
-            decoding="async"
+            fill
+            priority={eager}
             sizes="(min-width: 1536px) 16vw, (min-width: 768px) 25vw, 50vw"
             className="absolute inset-0 h-full w-full object-cover transition duration-300 group-hover:scale-[1.035]"
-            onError={() => setImageFailed(true)}
           />
         ) : (
           <div className="grid h-full place-items-center bg-[linear-gradient(135deg,#24252b,#15161b_55%,#2b2020)] text-white/40">
@@ -31,7 +39,7 @@ export function VideoCard({ item, eager = false }: { item: FeedItem; eager?: boo
         )}
         <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/75 to-transparent px-2 pb-2 pt-9 text-xs text-white/82">
           <span>{item.creatorName}</span>
-          {item.partCount && item.partCount > 1 ? <span>{item.partCount}P</span> : null}
+          {item.kind === "post" ? <span className="rounded bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-semibold text-black">动态视频</span> : item.partCount && item.partCount > 1 ? <span>{item.partCount}P</span> : null}
         </div>
       </div>
       <h3 className="mt-2 line-clamp-2 min-h-10 text-sm font-medium leading-5 text-white transition group-hover:text-[var(--accent)]">
@@ -47,9 +55,9 @@ export function CompactVideoCard({ item }: { item: FeedItem }) {
   const [imageFailed, setImageFailed] = useState(false);
   const showCover = cover && !imageFailed;
   return (
-    <Link href={item.kind === "video" ? `/watch/${item.id}` : `/dynamic?item=${item.id}`} className="group flex gap-3 rounded-lg p-1.5 transition hover:bg-white/5">
+    <Link href={item.playable ? `/watch/${item.id}` : `/dynamic/${item.id}`} className="group flex gap-3 rounded-lg p-1.5 transition hover:bg-white/5">
       <div className="relative aspect-video w-36 shrink-0 overflow-hidden rounded-lg bg-white/5 ring-1 ring-white/8">
-        {showCover ? <img src={cover} alt="" loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-cover transition group-hover:scale-105" onError={() => setImageFailed(true)} /> : <div className="grid h-full place-items-center text-white/35"><Play size={24} /></div>}
+        {showCover ? <ApiImage src={cover} alt="" fill sizes="144px" className="object-cover transition group-hover:scale-105" onError={() => setImageFailed(true)} /> : <div className="grid h-full place-items-center text-white/35"><Play size={24} /></div>}
         {item.partCount && item.partCount > 1 ? <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px]">{item.partCount}P</span> : null}
       </div>
       <div className="min-w-0 py-0.5">

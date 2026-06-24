@@ -1,6 +1,7 @@
 "use client";
 
-import { Ban, MoreHorizontal, Send, ThumbsDown, ThumbsUp } from "lucide-react";
+import { Ban, BookOpen, ExternalLink, MoreHorizontal, Send, ThumbsDown, ThumbsUp } from "lucide-react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
@@ -70,7 +71,7 @@ export default function WatchPage() {
 
             <section className="border-b border-white/8 py-5">
               <h1 className="text-xl font-semibold leading-8 md:text-2xl">{detail.item.title}</h1>
-              <p className="mt-1 text-sm text-white/45">{detail.item.creatorName} · {detail.item.categoryName}</p>
+              <p className="mt-1 text-sm text-white/45">{detail.item.creatorName}{detail.item.creatorAlias ? ` · ${detail.item.creatorAlias}` : ""} · {detail.item.categoryName}</p>
               <div className="mt-4 flex items-center gap-2">
                 <button className={`action-button ${reaction === "like" ? "active" : ""}`} onClick={() => void toggleReaction("like")}><ThumbsUp size={18} fill={reaction === "like" ? "currentColor" : "none"} /> 喜欢</button>
                 <button className={`action-button ${reaction === "dislike" ? "active" : ""}`} onClick={() => void toggleReaction("dislike")}><ThumbsDown size={18} fill={reaction === "dislike" ? "currentColor" : "none"} /> 不喜欢</button>
@@ -82,6 +83,16 @@ export default function WatchPage() {
                 </details>
               </div>
             </section>
+
+            {detail.item.kind === "post" ? (
+              <section className="mt-6 rounded-xl border border-[rgba(94,234,212,.14)] bg-[rgba(94,234,212,.045)] p-4 md:p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="flex items-center gap-2 font-semibold"><BookOpen size={18} className="text-[var(--accent)]" /> 简介</h2>
+                  <Link href={`/dynamic/${detail.item.id}`} className="inline-flex items-center gap-1.5 text-sm text-[var(--accent)] hover:underline">查看原动态 <ExternalLink size={14} /></Link>
+                </div>
+                {detail.item.post_body ? <p className="mt-3 line-clamp-6 whitespace-pre-wrap text-sm leading-7 text-white/68">{detail.item.post_body}</p> : <p className="mt-3 text-sm text-white/40">原动态没有正文，可前往动态页查看配图。</p>}
+              </section>
+            ) : null}
 
             <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-4 md:p-5">
               <h2 className="font-semibold">评论和笔记</h2>
