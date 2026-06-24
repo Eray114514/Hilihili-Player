@@ -114,7 +114,7 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
       ? scored.sort((a, b) => dateFor(a.row).localeCompare(dateFor(b.row)))
       : options.mode === "shuffle"
         ? scored.sort((a, b) => seededRandom(`${options.seed}:${a.row.id}`) - seededRandom(`${options.seed}:${b.row.id}`))
-        : scored.sort((a, b) => b.score - a.score);
+        : diversityRerank(scored.sort((a, b) => b.score - a.score));
 
   return sorted.slice(offset, offset + limit).map(({ row, score }) => toFeedItem(db, row, score));
 }
@@ -151,35 +151,96 @@ function scoreCandidate(db: ReturnType<typeof getSqlite>, row: CandidateRow, see
 
 function interactionWeight(db: ReturnType<typeof getSqlite>, targetType: string, targetId: string) {
   const rows = db.prepare(`
-    SELECT kind, SUM(value) AS value FROM interactions
+    SELECT kind, value, created_at FROM interactions
     WHERE target_type = ? AND target_id = ?
-    GROUP BY kind
-  `).all(targetType, targetId) as { kind: string; value: number }[];
+  `).all(targetType, targetId) as { kind: string; value: number; created_at: string }[];
 
-  return rows.reduce((score, row) => {
-    if (row.kind === "like") {
-      return score + row.value * 2;
-    }
-    if (row.kind === "dislike") {
-      return score - row.value * 2.5;
-    }
-    if (row.kind === "watch") {
-      return score + row.value * 0.1;
-    }
-    return score;
-  }, 0);
+  return rows.reduce((score, row) => score + kindWeight(row.kind, row.value, row.created_at), 0);
 }
 
 function tagInteractionWeight(db: ReturnType<typeof getSqlite>, itemId: string) {
   const rows = db.prepare(`
-    SELECT i.kind, SUM(i.value) AS value
+    SELECT i.kind, i.value, i.created_at
     FROM media_tags mt
     JOIN interactions i ON i.target_type = 'tag' AND i.target_id = mt.tag_id
     WHERE mt.media_item_id = ?
-    GROUP BY i.kind
-  `).all(itemId) as { kind: string; value: number }[];
+  `).all(itemId) as { kind: string; value: number; created_at: string }[];
 
-  return rows.reduce((score, row) => row.kind === "like" ? score + row.value : score - row.value, 0);
+  return rows.reduce((score, row) => score + kindWeight(row.kind, row.value, row.created_at), 0);
+}
+
+function kindWeight(kind: string, value: number, createdAt: string) {
+  const parsed = Date.parse(createdAt);
+  const decay = Number.isFinite(parsed) ? Math.exp(-((Date.now() - parsed) / 86400000) / 45) : 1;
+  switch (kind) {
+    case "coin":
+      return value * 4 * decay;
+    case "like":
+      return value * 2 * decay;
+    case "finish":
+      return value * 1.5 * decay;
+    case "watch":
+      return value * 0.15 * decay;
+    case "dislike":
+      return -value * 3 * decay;
+    default:
+      return 0;
+  }
+}
+
+function diversityRerank(scored: { row: CandidateRow; score: number }[]): { row: CandidateRow; score: number }[] {
+  const result: { row: CandidateRow; score: number }[] = [];
+  const deferred: { row: CandidateRow; score: number }[] = [];
+  const creatorCount = new Map<string, number>();
+
+  const violates = (creatorId: string | null): boolean => {
+    if (creatorId === null) return false;
+    const len = result.length;
+    if (len >= 2 && result[len - 1].row.creator_id === creatorId && result[len - 2].row.creator_id === creatorId) {
+      return true;
+    }
+    if ((creatorCount.get(creatorId) ?? 0) >= 3) {
+      return true;
+    }
+    return false;
+  };
+
+  const add = (item: { row: CandidateRow; score: number }) => {
+    result.push(item);
+    if (item.row.creator_id !== null) {
+      creatorCount.set(item.row.creator_id, (creatorCount.get(item.row.creator_id) ?? 0) + 1);
+    }
+  };
+
+  for (const item of scored) {
+    if (violates(item.row.creator_id)) {
+      deferred.push({ row: item.row, score: item.score * 0.65 });
+    } else {
+      add(item);
+    }
+  }
+
+  while (deferred.length > 0) {
+    let added = false;
+    const remaining: { row: CandidateRow; score: number }[] = [];
+    for (const item of deferred) {
+      if (violates(item.row.creator_id)) {
+        remaining.push(item);
+      } else {
+        add(item);
+        added = true;
+      }
+    }
+    deferred.length = 0;
+    deferred.push(...remaining);
+    if (!added) break;
+  }
+
+  for (const item of deferred) {
+    add(item);
+  }
+
+  return result;
 }
 
 function toFeedItem(db: ReturnType<typeof getSqlite>, row: CandidateRow, score: number): FeedItem {

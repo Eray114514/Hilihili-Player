@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, ChevronRight, Clapperboard, Heart, History, Home, Library, Play, Radio, Search, Settings } from "lucide-react";
+import { Bookmark, CheckCircle2, ChevronRight, Clapperboard, Coins, Heart, History, Home, Library, Play, Radio, Search, Settings } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense, type ReactNode } from "react";
@@ -75,14 +75,18 @@ function ProfileMenu() {
     { href: "/history?tab=history", label: "观看历史", icon: History },
     { href: "/history?tab=completed", label: "已看完", icon: CheckCircle2 },
     { href: "/history?tab=likes", label: "最近点赞", icon: Heart },
+    { href: "/history?tab=coins", label: "最近投币", icon: Coins },
+    { href: "/favorites", label: "我的收藏", icon: Bookmark },
     { href: "/settings", label: "设置与媒体库", icon: Settings }
   ];
   return (
     <details className="group/profile relative">
-      <summary className="list-none rounded-full outline-none ring-offset-2 ring-offset-[#0d0f14] focus-visible:ring-2 focus-visible:ring-[var(--accent)]" aria-label="打开个人菜单">
-        <span className="relative grid h-10 w-10 place-items-center overflow-hidden rounded-full bg-[linear-gradient(145deg,#87f5df_0%,#36bfa9_48%,#6957d9_100%)] font-black text-[#07110f] shadow-lg shadow-teal-950/30 ring-2 ring-white/15">
+      <summary className="relative grid h-10 w-10 place-items-center rounded-full outline-none ring-offset-2 ring-offset-[#0d0f14] focus-visible:ring-2 focus-visible:ring-[var(--accent)]" aria-label="打开个人菜单">
+        <span className="grid h-10 w-10 place-items-center overflow-hidden rounded-full bg-[linear-gradient(145deg,#87f5df_0%,#36bfa9_52%,#6957d9_100%)] font-black text-[#07110f] shadow-lg shadow-teal-950/30 ring-1 ring-white/15">
           H
-          <span className="absolute bottom-0.5 right-0.5 grid h-3.5 w-3.5 place-items-center rounded-full bg-[#0d0f14] text-[var(--accent)] ring-1 ring-white/20"><Play size={7} fill="currentColor" /></span>
+        </span>
+        <span className="pointer-events-none absolute bottom-0 right-0 grid h-4 w-4 place-items-center rounded-full bg-[#0d0f14] text-[var(--accent)] ring-2 ring-[#0d0f14]">
+          <Play size={8} fill="currentColor" />
         </span>
       </summary>
       <div className="absolute right-0 top-12 z-50 w-64 overflow-hidden rounded-2xl border border-white/10 bg-[#171920] p-2 shadow-2xl shadow-black/50">

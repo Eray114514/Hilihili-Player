@@ -1,13 +1,13 @@
 "use client";
 
-import { Ban, BookOpen, ExternalLink, MoreHorizontal, Send, ThumbsDown, ThumbsUp } from "lucide-react";
+import { Ban, Bookmark, BookOpen, Coins, ExternalLink, MoreHorizontal, Send, ThumbsDown, ThumbsUp } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { CompactVideoCard } from "@/components/VideoCard";
 import { VideoPlayer } from "@/components/VideoPlayer";
-import { getJson, postJson, putJson, type ItemDetail } from "@/lib/api";
+import { deleteJson, getJson, postJson, putJson, type FavoriteFolder, type ItemDetail } from "@/lib/api";
 import type { Reaction } from "@hilihili/shared";
 
 export default function WatchPage() {
@@ -18,6 +18,10 @@ export default function WatchPage() {
   const [sideTab, setSideTab] = useState<"parts" | "related">("related");
   const [reaction, setReaction] = useState<Reaction>(null);
   const [blacklisted, setBlacklisted] = useState(false);
+  const [coined, setCoined] = useState(false);
+  const [favoritedFolderIds, setFavoritedFolderIds] = useState<string[]>([]);
+  const [folders, setFolders] = useState<FavoriteFolder[]>([]);
+  const [newFolderName, setNewFolderName] = useState("");
 
   useEffect(() => {
     let ignore = false;
@@ -26,9 +30,14 @@ export default function WatchPage() {
       setDetail(response);
       setReaction(response.item.reaction);
       setBlacklisted(Boolean(response.item.creatorBlacklisted));
+      setCoined(Boolean(response.item.coined));
+      setFavoritedFolderIds(response.favoritedFolderIds);
       const resumeIndex = response.parts.findIndex((part) => part.id === response.item.resumePartId);
       setActivePartIndex(resumeIndex >= 0 ? resumeIndex : 0);
       if (response.parts.length > 1) setSideTab("parts");
+    });
+    void getJson<{ folders: FavoriteFolder[] }>("/me/favorites").then((res) => {
+      if (!ignore) setFolders(res.folders);
     });
     return () => { ignore = true; };
   }, [params.id]);
@@ -45,6 +54,32 @@ export default function WatchPage() {
     const next = !blacklisted;
     setBlacklisted(next);
     await putJson(`/creators/${creatorId}/blacklist`, { blacklisted: next });
+  }
+
+  async function toggleCoin() {
+    const response = await putJson<{ coined: boolean }>(`/items/${params.id}/coin`, {});
+    setCoined(response.coined);
+  }
+
+  async function toggleFavorite(folderId: string) {
+    const isFavorited = favoritedFolderIds.includes(folderId);
+    if (isFavorited) {
+      await deleteJson(`/items/${params.id}/favorites?folderId=${folderId}`);
+      setFavoritedFolderIds((current) => current.filter((id) => id !== folderId));
+      setFolders((current) => current.map((folder) => folder.id === folderId ? { ...folder, itemCount: Math.max(0, folder.itemCount - 1) } : folder));
+    } else {
+      await postJson(`/items/${params.id}/favorites`, { folderId });
+      setFavoritedFolderIds((current) => [...current, folderId]);
+      setFolders((current) => current.map((folder) => folder.id === folderId ? { ...folder, itemCount: folder.itemCount + 1 } : folder));
+    }
+  }
+
+  async function createFolder() {
+    const name = newFolderName.trim();
+    if (!name) return;
+    const response = await postJson<{ id: string; name: string; createdAt: string }>("/me/favorites/folders", { name });
+    setFolders((current) => [...current, { id: response.id, name: response.name, itemCount: 0, createdAt: response.createdAt, updatedAt: response.createdAt }]);
+    setNewFolderName("");
   }
 
   async function submitComment(event: FormEvent<HTMLFormElement>) {
@@ -76,6 +111,30 @@ export default function WatchPage() {
               <div className="mt-4 flex items-center gap-2">
                 <button className={`action-button ${reaction === "like" ? "active" : ""}`} onClick={() => void toggleReaction("like")}><ThumbsUp size={18} fill={reaction === "like" ? "currentColor" : "none"} /> 喜欢</button>
                 <button className={`action-button ${reaction === "dislike" ? "active" : ""}`} onClick={() => void toggleReaction("dislike")}><ThumbsDown size={18} fill={reaction === "dislike" ? "currentColor" : "none"} /> 不喜欢</button>
+                <button className={`action-button ${coined ? "active" : ""}`} onClick={() => void toggleCoin()}><Coins size={18} fill={coined ? "currentColor" : "none"} /> 投币</button>
+                <details className="relative">
+                  <summary className={`action-button cursor-pointer list-none ${favoritedFolderIds.length > 0 ? "active" : ""}`} aria-label="收藏"><Bookmark size={18} fill={favoritedFolderIds.length > 0 ? "currentColor" : "none"} /> 收藏</summary>
+                  <div className="absolute right-0 top-11 z-20 w-64 rounded-xl border border-white/10 bg-[#1a1c22] p-2 shadow-2xl">
+                    <div className="max-h-64 space-y-0.5 overflow-y-auto">
+                      {folders.length === 0 ? (
+                        <p className="px-3 py-3 text-sm text-white/40">还没有收藏夹，点击下方新建。</p>
+                      ) : folders.map((folder) => {
+                        const active = favoritedFolderIds.includes(folder.id);
+                        return (
+                          <button key={folder.id} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-white/72 transition hover:bg-white/8 hover:text-white" onClick={() => void toggleFavorite(folder.id)}>
+                            <Bookmark size={15} className={active ? "text-[var(--accent)]" : "text-white/35"} fill={active ? "currentColor" : "none"} />
+                            <span className="flex-1 truncate">{folder.name}</span>
+                            <span className="text-xs text-white/35">{folder.itemCount}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <form className="mt-1.5 flex gap-1.5 border-t border-white/8 pt-1.5" onSubmit={(event) => { event.preventDefault(); void createFolder(); }}>
+                      <input value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} className="field min-w-0 flex-1 text-sm" placeholder="新建收藏夹…" maxLength={50} />
+                      <button type="submit" className="secondary-button shrink-0 !px-2.5 !py-1.5">新建</button>
+                    </form>
+                  </div>
+                </details>
                 <details className="relative ml-auto">
                   <summary className="icon-button cursor-pointer list-none" aria-label="更多操作"><MoreHorizontal size={19} /></summary>
                   <div className="absolute right-0 top-11 z-20 w-44 rounded-xl border border-white/10 bg-[#1a1c22] p-1.5 shadow-2xl">
