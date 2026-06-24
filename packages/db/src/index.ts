@@ -182,6 +182,13 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "media_parts", "compatibility_error", "TEXT");
   ensureColumn(db, "creators", "alias", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS media_items_library_relative_idx ON media_items(library_id, relative_path)");
+
+  db.exec(`
+    UPDATE media_items SET title = trim(substr(title, length('[未知]') + 1))
+    WHERE title LIKE '[未知]%' AND trim(substr(title, length('[未知]') + 1)) != '';
+    UPDATE media_parts SET title = trim(substr(title, length('[未知]') + 1))
+    WHERE title LIKE '[未知]%' AND trim(substr(title, length('[未知]') + 1)) != '';
+  `);
 }
 
 function ensureColumn(db: Database.Database, table: string, column: string, definition: string) {
