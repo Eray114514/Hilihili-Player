@@ -734,7 +734,7 @@ function deriveTitleFromFile(filePath: string, creatorName: string) {
 
 function cleanTitle(value: string) {
   return value
-    .replace(/^\[\d{4}-\d{2}(?:-\d{2})?\]\s*/, "")
+    .replace(/^\[(?:\d{4}-\d{2}(?:-\d{2})?|未知)\]\s*/, "")
     .replace(/^(?:\d{8}|\d{6})[\s_-]+/, "")
     .replace(/[_-]\d+$/, "")
     .replaceAll("_", " ")
