@@ -545,19 +545,19 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
     return;
   }
   const placeholders = libraryIds.map(() => "?").join(",");
-  const rows = db.prepare(`
-    SELECT mi.id, mi.fingerprint, mi.generated_cover_path, mp.path
+  const coverRows = db.prepare(`
+    SELECT mi.id, mi.fingerprint, mi.generated_cover_path, mp.path, mp.id AS part_id
     FROM media_items mi
     JOIN media_parts mp ON mp.item_id = mi.id AND mp.part_index = 1
     WHERE mi.library_id IN (${placeholders}) AND mi.kind = 'video' AND mi.cover_path IS NULL
     ORDER BY mi.first_seen_at DESC
-  `).all(...libraryIds) as { id: string; fingerprint: string; generated_cover_path: string | null; path: string }[];
+  `).all(...libraryIds) as { id: string; fingerprint: string; generated_cover_path: string | null; path: string; part_id: string }[];
 
   db.prepare("UPDATE scan_runs SET thumbnails_total = ?, thumbnails_ready = 0, thumbnails_failed = 0 WHERE id = ?")
-    .run(rows.length, runId);
+    .run(coverRows.length, runId);
   let ready = 0;
   let failed = 0;
-  for (const row of rows) {
+  for (const row of coverRows) {
     try {
       const cachedPath = row.generated_cover_path && existsSync(row.generated_cover_path)
         ? row.generated_cover_path
@@ -572,6 +572,74 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
     }
     db.prepare("UPDATE scan_runs SET thumbnails_ready = ?, thumbnails_failed = ? WHERE id = ?").run(ready, failed, runId);
   }
+
+  const allParts = db.prepare(`
+    SELECT mp.id, mp.path, mp.fingerprint, mp.duration_seconds, mp.preview_sprite_path
+    FROM media_parts mp
+    JOIN media_items mi ON mi.id = mp.item_id
+    WHERE mi.library_id IN (${placeholders}) AND mi.kind = 'video'
+  `).all(...libraryIds) as { id: string; path: string; fingerprint: string; duration_seconds: number | null; preview_sprite_path: string | null }[];
+
+  for (const part of allParts) {
+    try {
+      let duration = part.duration_seconds ?? 0;
+      if (!duration) {
+        duration = await probeDuration(part.path);
+        if (duration > 0) {
+          db.prepare("UPDATE media_parts SET duration_seconds = ? WHERE id = ?").run(duration, part.id);
+        }
+      }
+
+      const spriteExists = part.preview_sprite_path && existsSync(part.preview_sprite_path);
+      if (!spriteExists && duration > 3) {
+        const sprite = await generatePreviewSprite(part.path, part.fingerprint, duration);
+        db.prepare(`
+          UPDATE media_parts SET preview_sprite_path = ?, preview_sprite_cols = ?, preview_sprite_rows = ?,
+            preview_sprite_interval = ?, preview_thumb_w = ?, preview_thumb_h = ?
+          WHERE id = ?
+        `).run(sprite.path, sprite.cols, sprite.rows, sprite.interval, sprite.thumbW, sprite.thumbH, part.id);
+      }
+    } catch {
+      // sprite generation is best-effort; don't fail the scan
+    }
+  }
+}
+
+const SPRITE_THUMB_W = 160;
+const SPRITE_THUMB_H = 90;
+const SPRITE_COLS = 10;
+const SPRITE_MAX_THUMBS = 100;
+
+async function generatePreviewSprite(videoPath: string, fingerprint: string, duration: number) {
+  const cacheDir = getAppMediaCacheDir();
+  mkdirSync(cacheDir, { recursive: true });
+  const outputPath = join(cacheDir, `${fingerprint}.sprite.webp`);
+  if (existsSync(outputPath)) {
+    const existingRows = Math.ceil(duration / Math.max(2, duration / SPRITE_MAX_THUMBS)) / SPRITE_COLS;
+    return {
+      path: outputPath,
+      cols: SPRITE_COLS,
+      rows: Math.ceil(Math.min(SPRITE_MAX_THUMBS, Math.ceil(duration / Math.max(2, duration / SPRITE_MAX_THUMBS))) / SPRITE_COLS),
+      interval: Math.max(2, duration / SPRITE_MAX_THUMBS),
+      thumbW: SPRITE_THUMB_W,
+      thumbH: SPRITE_THUMB_H
+    };
+  }
+
+  const interval = Math.max(2, duration / SPRITE_MAX_THUMBS);
+  const thumbCount = Math.min(SPRITE_MAX_THUMBS, Math.ceil(duration / interval));
+  const rows = Math.ceil(thumbCount / SPRITE_COLS);
+
+  await runProcess(getFfmpegPath(), [
+    "-hide_banner", "-loglevel", "error",
+    "-ss", "0.5", "-i", videoPath,
+    "-vf", `fps=1/${interval},scale=${SPRITE_THUMB_W}:${SPRITE_THUMB_H}:force_original_aspect_ratio=decrease,pad=${SPRITE_THUMB_W}:${SPRITE_THUMB_H}:(ow-iw)/2:(oh-ih)/2,setsar=1,tile=${SPRITE_COLS}x${rows}`,
+    "-frames:v", "1",
+    "-c:v", "libwebp", "-quality", "50",
+    "-y", outputPath
+  ]);
+
+  return { path: outputPath, cols: SPRITE_COLS, rows, interval, thumbW: SPRITE_THUMB_W, thumbH: SPRITE_THUMB_H };
 }
 
 async function generateThumbnail(videoPath: string, fingerprint: string) {

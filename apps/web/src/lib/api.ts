@@ -60,6 +60,20 @@ export type ScanRunsResponse = { runs: ScanRun[] };
 export type Category = { id: string; name: string; itemCount: number };
 export type Creator = { id: string; name: string; categoryName: string; itemCount: number };
 
+export type PartDetail = {
+  id: string;
+  title: string;
+  partIndex: number;
+  sizeBytes: number;
+  durationSeconds: number | null;
+  previewSpritePath: string | null;
+  previewSpriteCols: number | null;
+  previewSpriteRows: number | null;
+  previewSpriteInterval: number | null;
+  previewThumbW: number | null;
+  previewThumbH: number | null;
+};
+
 export type ItemDetail = {
   item: {
     id: string;
@@ -76,7 +90,7 @@ export type ItemDetail = {
     resumePartId: string | null;
     resumePositionSeconds: number | null;
   };
-  parts: { id: string; title: string; partIndex: number; sizeBytes: number }[];
+  parts: PartDetail[];
   comments: { id: string; body: string; atSeconds: number | null; createdAt: string }[];
   related: FeedItem[];
 };

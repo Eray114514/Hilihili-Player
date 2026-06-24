@@ -155,6 +155,12 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "scan_runs", "thumbnails_total", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "scan_runs", "thumbnails_ready", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "scan_runs", "thumbnails_failed", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "media_parts", "preview_sprite_path", "TEXT");
+  ensureColumn(db, "media_parts", "preview_sprite_cols", "INTEGER");
+  ensureColumn(db, "media_parts", "preview_sprite_rows", "INTEGER");
+  ensureColumn(db, "media_parts", "preview_sprite_interval", "REAL");
+  ensureColumn(db, "media_parts", "preview_thumb_w", "INTEGER");
+  ensureColumn(db, "media_parts", "preview_thumb_h", "INTEGER");
 }
 
 function ensureColumn(db: Database.Database, table: string, column: string, definition: string) {
