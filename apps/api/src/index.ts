@@ -183,8 +183,17 @@ app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
     return reply.code(404).send({ error: "Item not found" });
   }
 
-  const parts = db.prepare("SELECT id, title, part_index AS partIndex, size_bytes AS sizeBytes FROM media_parts WHERE item_id = ? ORDER BY part_index ASC")
-    .all(request.params.id);
+  const parts = db.prepare(`
+    SELECT id, title, part_index AS partIndex, size_bytes AS sizeBytes,
+      duration_seconds AS durationSeconds,
+      preview_sprite_path AS previewSpritePath,
+      preview_sprite_cols AS previewSpriteCols,
+      preview_sprite_rows AS previewSpriteRows,
+      preview_sprite_interval AS previewSpriteInterval,
+      preview_thumb_w AS previewThumbW,
+      preview_thumb_h AS previewThumbH
+    FROM media_parts WHERE item_id = ? ORDER BY part_index ASC
+  `).all(request.params.id);
   const comments = db.prepare("SELECT id, body, at_seconds AS atSeconds, created_at AS createdAt FROM comments WHERE item_id = ? ORDER BY created_at DESC")
     .all(request.params.id);
   const related = getRecommendedFeed({ limit: 12, seed: request.params.id, includeFinished: false, excludeId: request.params.id });
@@ -206,6 +215,19 @@ app.get<{ Params: { id: string } }>("/media/items/:id/cover", async (request, re
   reply.header("Content-Type", lookup(coverPath) || "application/octet-stream");
   reply.header("Cache-Control", "public, max-age=86400");
   return reply.send(createReadStream(coverPath));
+});
+
+app.get<{ Params: { id: string } }>("/media/parts/:id/sprite", async (request, reply) => {
+  const row = db.prepare("SELECT preview_sprite_path FROM media_parts WHERE id = ?").get(request.params.id) as
+    | { preview_sprite_path: string | null }
+    | undefined;
+  const spritePath = row?.preview_sprite_path && existsSync(row.preview_sprite_path) ? row.preview_sprite_path : null;
+  if (!spritePath) {
+    return reply.code(404).send({ error: "Preview sprite not found" });
+  }
+  reply.header("Content-Type", "image/webp");
+  reply.header("Cache-Control", "public, max-age=604800");
+  return reply.send(createReadStream(spritePath));
 });
 
 app.put<{ Params: { id: string }; Body: { reaction?: "like" | "dislike" | null } }>("/items/:id/reaction", async (request, reply) => {
