@@ -164,11 +164,29 @@ function upsertPartWithSubtitles(
   sizeBytes: number,
   fingerprint: string
 ) {
-  const partId = createId("part");
-  db.prepare(`
-    INSERT INTO media_parts (id, item_id, title, part_index, path, size_bytes, fingerprint)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(partId, itemId, title, partIndex, videoPath, sizeBytes, fingerprint);
+  // media_parts.path 是 UNIQUE 约束。clearParts 只会清理当前 item 的分片，
+  // 若同一路径仍挂在其它 item 上（例如上次扫描失败遗留的孤儿分片，或目录结构
+  // 变化导致 upsertMediaItem 新建了 item），直接 INSERT 会触发 UNIQUE 冲突。
+  // 这里复用已存在的行：路径相同意味着文件相同，duration/stream/预览图等派生
+  // 元数据仍然有效，只需把归属 item 和基础字段更新到当前值即可。
+  const existing = db.prepare("SELECT id FROM media_parts WHERE path = ?").get(videoPath) as { id: string } | undefined;
+  let partId: string;
+  if (existing) {
+    partId = existing.id;
+    db.prepare(`
+      UPDATE media_parts
+      SET item_id = ?, title = ?, part_index = ?, size_bytes = ?, fingerprint = ?
+      WHERE id = ?
+    `).run(itemId, title, partIndex, sizeBytes, fingerprint, partId);
+  } else {
+    partId = createId("part");
+    db.prepare(`
+      INSERT INTO media_parts (id, item_id, title, part_index, path, size_bytes, fingerprint)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(partId, itemId, title, partIndex, videoPath, sizeBytes, fingerprint);
+  }
+  // 复用行时旧的字幕仍存在，先清空再重扫，避免重复。
+  db.prepare("DELETE FROM media_subtitles WHERE part_id = ?").run(partId);
   scanSubtitles(db, partId, videoPath);
   return partId;
 }
@@ -215,6 +233,9 @@ export async function processNextScanRun() {
       .run(nowIso(), indexed, run.id);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // 扫描失败不仅要写进 scan_runs.message，也要打到 stdout，否则 worker 日志
+    // 只会看到 "scan run complete" 而看不到失败原因。
+    console.error(`[media] scan run ${run.id} failed: ${message}`, error);
     db.prepare("UPDATE scan_runs SET status = 'failed', message = ?, finished_at = ? WHERE id = ?")
       .run(message, nowIso(), run.id);
   }
@@ -747,12 +768,24 @@ function clearParts(db: SqliteDatabase, itemId: string) {
 
 function replaceImages(db: SqliteDatabase, itemId: string, images: string[]) {
   db.prepare("DELETE FROM media_images WHERE item_id = ?").run(itemId);
+  // media_images.path 同样是 UNIQUE 约束，DELETE 只按 item_id 清理，
+  // 残留在其它 item 上的同路径行会让下面的 INSERT 失败。复用已存在行。
+  const updateExisting = db.prepare(`
+    UPDATE media_images
+    SET item_id = ?, sort_index = ?, size_bytes = ?, fingerprint = ?, thumbnail_path = NULL
+    WHERE path = ?
+  `);
+  const insertNew = db.prepare(`
+    INSERT INTO media_images (id, item_id, path, sort_index, size_bytes, fingerprint, thumbnail_path)
+    VALUES (?, ?, ?, ?, ?, ?, NULL)
+  `);
   images.forEach((path, index) => {
     const stat = statSync(path);
-    db.prepare(`
-      INSERT INTO media_images (id, item_id, path, sort_index, size_bytes, fingerprint, thumbnail_path)
-      VALUES (?, ?, ?, ?, ?, ?, NULL)
-    `).run(createId("img"), itemId, path, index + 1, stat.size, fingerprintFile(path));
+    const fp = fingerprintFile(path);
+    const result = updateExisting.run(itemId, index + 1, stat.size, fp, path);
+    if (result.changes === 0) {
+      insertNew.run(createId("img"), itemId, path, index + 1, stat.size, fp);
+    }
   });
 }
 
