@@ -13,3 +13,4 @@ app-data
 *.db-wal
 .hilihili-safe-demo
 .pnpm-store
+.trae
