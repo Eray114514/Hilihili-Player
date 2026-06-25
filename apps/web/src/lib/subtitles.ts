@@ -62,7 +62,10 @@ export function parseSubtitle(content: string): SubtitleCue[] {
     if (timeIndex === -1 || timeIndex >= lines.length - 1) continue;
 
     const timeLine = lines[timeIndex];
-    const match = timeLine.match(/([\d:.]+)\s*-->\s*([\d:.]+)/);
+    // 字符类必须包含逗号：SRT 的毫秒分隔符是逗号（00:00:01,000），VTT 是点号（00:00:01.000）。
+    // 若遗漏逗号，正则会从毫秒片段（如 ",000" 后的 "000"）开始匹配，导致 SRT 的 start 被解析为 0
+    // 或被丢弃（非零毫秒时 start > end），最终整条字幕时间轴错乱。
+    const match = timeLine.match(/([\d:.,]+)\s*-->\s*([\d:.,]+)/);
     if (!match) continue;
 
     const start = parseTime(match[1]);
