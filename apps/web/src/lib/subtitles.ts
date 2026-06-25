@@ -39,15 +39,24 @@ export function decodeSubtitle(buffer: ArrayBuffer): string {
 }
 
 export function parseSubtitle(content: string): SubtitleCue[] {
-  const cleaned = content.trim().replace(/^\uFEFF/, "");
-  const isVtt = cleaned.startsWith("WEBVTT");
+  const cleaned = content
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .trim()
+    .replace(/^\uFEFF/, "");
+  const isVtt = /^WEBVTT/i.test(cleaned);
   const blocks = cleaned.split(/\n\s*\n/);
   const cues: SubtitleCue[] = [];
 
   for (const block of blocks) {
     const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
     if (lines.length === 0) continue;
-    if (isVtt && lines[0].startsWith("WEBVTT")) continue;
+
+    const first = lines[0];
+    if (isVtt) {
+      if (/^WEBVTT/i.test(first)) continue;
+      if (/^(NOTE|STYLE|REGION)\b/i.test(first)) continue;
+    }
 
     const timeIndex = lines.findIndex((line) => line.includes("-->"));
     if (timeIndex === -1 || timeIndex >= lines.length - 1) continue;
@@ -60,7 +69,16 @@ export function parseSubtitle(content: string): SubtitleCue[] {
     const end = parseTime(match[2]);
     if (Number.isNaN(start) || Number.isNaN(end) || end <= start) continue;
 
-    const textLines = lines.slice(timeIndex + 1).map((line) => line.replace(/\{[^}]*\}/g, "").trim()).filter(Boolean);
+    const textLines = lines
+      .slice(timeIndex + 1)
+      .map((line) =>
+        line
+          .replace(/\{[^}]*\}/g, "")
+          .replace(/<[^>]+>/g, "")
+          .replace(/^\d+$/, "")
+          .trim()
+      )
+      .filter(Boolean);
     if (textLines.length === 0) continue;
 
     const primaryText = textLines[0];
@@ -69,7 +87,7 @@ export function parseSubtitle(content: string): SubtitleCue[] {
     cues.push({ start, end, primaryText, secondaryText });
   }
 
-  return cues;
+  return cues.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
 function parseTime(value: string): number {

@@ -146,12 +146,23 @@ function scanSubtitles(db: SqliteDatabase, partId: string, videoPath: string) {
         : candidate.language !== "und" && index === 0;
   });
 
+  const selectId = db.prepare("SELECT id FROM media_subtitles WHERE part_id = ? AND path = ?");
   const insert = db.prepare(`
     INSERT INTO media_subtitles (id, part_id, path, language, label, is_default, sort_index)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
+  const update = db.prepare(`
+    UPDATE media_subtitles
+    SET language = ?, label = ?, is_default = ?, sort_index = ?
+    WHERE id = ?
+  `);
   for (const candidate of candidates) {
-    insert.run(createId("sub"), partId, candidate.path, candidate.language, candidate.label, candidate.isDefault ? 1 : 0, candidate.sortIndex);
+    const existing = selectId.get(partId, candidate.path) as { id: string } | undefined;
+    if (existing) {
+      update.run(candidate.language, candidate.label, candidate.isDefault ? 1 : 0, candidate.sortIndex, existing.id);
+    } else {
+      insert.run(createId("sub"), partId, candidate.path, candidate.language, candidate.label, candidate.isDefault ? 1 : 0, candidate.sortIndex);
+    }
   }
 }
 

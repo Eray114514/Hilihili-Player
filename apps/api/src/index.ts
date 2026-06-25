@@ -480,7 +480,9 @@ app.get<{ Params: { id: string; subId: string } }>("/media/parts/:id/subtitles/:
   const ext = extname(row.path).toLowerCase();
   const contentType = ext === ".vtt" ? "text/vtt" : ext === ".srt" ? "text/plain" : "application/octet-stream";
   reply.header("Content-Type", contentType);
-  reply.header("Cache-Control", "public, max-age=604800");
+  reply.header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  reply.header("Pragma", "no-cache");
+  reply.header("Expires", "0");
   return reply.send(createReadStream(row.path));
 });
 

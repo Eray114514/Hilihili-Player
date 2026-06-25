@@ -2,7 +2,7 @@
 
 import { ArrowLeft, Bookmark, BookmarkPlus, Clock3, Folder, Trash2 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { ApiImage } from "@/components/ApiImage";
 import { AppShell, EmptyState } from "@/components/AppShell";
 import { assetUrl, deleteJson, getJson, postJson, type FavoriteFolder } from "@/lib/api";
@@ -16,23 +16,28 @@ export default function FavoritesPage() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const loadFolders = useCallback(async () => {
-    const response = await getJson<{ folders: FavoriteFolder[] }>("/me/favorites");
-    setFolders(response.folders);
+  useEffect(() => {
+    let ignore = false;
+    void getJson<{ folders: FavoriteFolder[] }>("/me/favorites")
+      .then((response) => {
+        if (ignore) return;
+        setFolders(response.folders);
+      })
+      .finally(() => {
+        if (!ignore) setLoading(false);
+      });
+    return () => { ignore = true; };
   }, []);
 
   useEffect(() => {
-    void loadFolders().finally(() => setLoading(false));
-  }, [loadFolders]);
-
-  useEffect(() => {
-    if (!activeFolder) {
-      setItems([]);
-      return;
-    }
+    if (!activeFolder) return;
+    let ignore = false;
     void getJson<{ items: { item: FeedItem; favoritedAt: string; folderId: string }[] }>(
       `/me/favorites/folders/${activeFolder.id}/items`
-    ).then((response) => setItems(response.items));
+    ).then((response) => {
+      if (!ignore) setItems(response.items);
+    });
+    return () => { ignore = true; };
   }, [activeFolder]);
 
   async function createFolder(event: FormEvent<HTMLFormElement>) {

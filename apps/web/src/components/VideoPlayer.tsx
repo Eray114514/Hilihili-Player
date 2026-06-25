@@ -135,7 +135,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         const base = assetUrl(track.url);
         if (!base) continue;
         try {
-          const response = await fetch(`${base}?t=${Date.now()}`);
+          const response = await fetch(base, { cache: "no-store" });
           if (!response.ok) continue;
           const text = decodeSubtitle(await response.arrayBuffer());
           rawMap.set(track.id, text);
