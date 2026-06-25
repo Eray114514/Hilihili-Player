@@ -89,13 +89,15 @@ export type ActivityEntry = {
   completedAt: string | null;
   updatedAt: string | null;
   likedAt: string | null;
+  coinedAt: string | null;
 };
 export type ActivityResponse = {
   history: ActivityEntry[];
   continueWatching: ActivityEntry[];
   completed: ActivityEntry[];
   recentLikes: ActivityEntry[];
-  stats: { history: number; completed: number; likes: number };
+  recentCoins: ActivityEntry[];
+  stats: { history: number; completed: number; likes: number; coins: number };
 };
 export type Category = { id: string; name: string; itemCount: number };
 export type Creator = { id: string; name: string; alias: string | null; categoryName: string; itemCount: number };
@@ -153,10 +155,29 @@ export type ItemDetail = {
     resumePositionSeconds: number | null;
     content_published_at: string | null;
     file_modified_at: string | null;
+    coined: number;
+    coinedAt: string | null;
   };
   parts: PartDetail[];
   images: ItemImage[];
   tags: string[];
   comments: { id: string; body: string; atSeconds: number | null; createdAt: string }[];
   related: FeedItem[];
+  favoritedFolderIds: string[];
+};
+
+export type FavoriteFolder = {
+  id: string;
+  name: string;
+  itemCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FavoriteListResponse = {
+  folders: FavoriteFolder[];
+};
+
+export type FavoriteFolderItemsResponse = {
+  items: { item: FeedItem; favoritedAt: string; folderId: string }[];
 };

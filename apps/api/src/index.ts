@@ -34,11 +34,20 @@ type ActivityRow = {
   completedAt: string | null;
   updatedAt: string | null;
   likedAt: string | null;
+  coinedAt: string | null;
 };
 
 type CommentBody = {
   body?: string;
   atSeconds?: number | null;
+};
+
+type FavoriteFolderBody = {
+  name?: string;
+};
+
+type FavoriteItemBody = {
+  folderId?: string;
 };
 
 const app = Fastify({ logger: true });
@@ -216,7 +225,23 @@ app.get<{ Querystring: { limit?: string } }>("/me/activity", async (request) => 
     ORDER BY ip.updated_at DESC
     LIMIT ?
   `).all(limit) as ActivityRow[];
-  const feedItems = getFeedItemsByIds([...historyRows, ...likedRows].map((row) => row.itemId));
+  const coinedRows = db.prepare(`
+    SELECT ip.item_id AS itemId, wp.part_id AS resumePartId,
+      mp.part_index AS resumePartIndex, mp.title AS resumePartTitle,
+      COALESCE(wp.position_seconds, 0) AS positionSeconds, mp.duration_seconds AS durationSeconds,
+      COALESCE(wp.finished, 0) AS finished, wp.started_at AS startedAt,
+      wp.completed_at AS completedAt, wp.updated_at AS updatedAt,
+      ip.coined_at AS coinedAt, ip2.updated_at AS likedAt
+    FROM item_preferences ip
+    JOIN media_items mi ON mi.id = ip.item_id AND mi.hidden = 0
+    LEFT JOIN watch_progress wp ON wp.item_id = ip.item_id
+    LEFT JOIN media_parts mp ON mp.id = wp.part_id
+    LEFT JOIN item_preferences ip2 ON ip2.item_id = ip.item_id AND ip2.reaction = 'like'
+    WHERE ip.coined = 1
+    ORDER BY ip.coined_at DESC
+    LIMIT ?
+  `).all(limit) as ActivityRow[];
+  const feedItems = getFeedItemsByIds([...historyRows, ...likedRows, ...coinedRows].map((row) => row.itemId));
   const itemsById = new Map(feedItems.map((item) => [item.id, item]));
   const toEntry = (row: ActivityRow) => {
     const item = itemsById.get(row.itemId);
@@ -237,20 +262,24 @@ app.get<{ Querystring: { limit?: string } }>("/me/activity", async (request) => 
       startedAt: row.startedAt,
       completedAt: row.completedAt,
       updatedAt: row.updatedAt,
-      likedAt: row.likedAt
+      likedAt: row.likedAt,
+      coinedAt: row.coinedAt
     };
   };
   const history = historyRows.map(toEntry).filter((entry) => entry !== null);
   const recentLikes = likedRows.map(toEntry).filter((entry) => entry !== null);
+  const recentCoins = coinedRows.map(toEntry).filter((entry) => entry !== null);
   return {
     history,
     continueWatching: history.filter((entry) => !entry.finished && entry.positionSeconds > 0),
     completed: history.filter((entry) => entry.finished),
     recentLikes,
+    recentCoins,
     stats: {
       history: (db.prepare("SELECT COUNT(*) AS count FROM watch_progress").get() as { count: number }).count,
       completed: (db.prepare("SELECT COUNT(*) AS count FROM watch_progress WHERE finished = 1").get() as { count: number }).count,
-      likes: (db.prepare("SELECT COUNT(*) AS count FROM item_preferences WHERE reaction = 'like'").get() as { count: number }).count
+      likes: (db.prepare("SELECT COUNT(*) AS count FROM item_preferences WHERE reaction = 'like'").get() as { count: number }).count,
+      coins: (db.prepare("SELECT COUNT(*) AS count FROM item_preferences WHERE coined = 1").get() as { count: number }).count
     }
   };
 });
@@ -308,7 +337,8 @@ app.get("/creators", async () => ({
 app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
   const item = db.prepare(`
     SELECT mi.*, c.name AS categoryName, cr.name AS creatorName, cr.alias AS creatorAlias,
-      ip.reaction, COALESCE(cp.blacklisted, 0) AS creatorBlacklisted,
+      ip.reaction, ip.coined, ip.coined_at AS coinedAt,
+      COALESCE(cp.blacklisted, 0) AS creatorBlacklisted,
       wp.part_id AS resumePartId, wp.position_seconds AS resumePositionSeconds
     FROM media_items mi
     LEFT JOIN categories c ON c.id = mi.category_id
@@ -389,8 +419,10 @@ app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
     WHERE mt.media_item_id = ? ORDER BY t.name ASC
   `).all(request.params.id) as { name: string }[];
   const related = getRecommendedFeed({ limit: 12, seed: request.params.id, includeFinished: false, excludeId: request.params.id });
+  const favoritedFolderIds = db.prepare("SELECT folder_id AS folderId FROM favorites WHERE item_id = ?")
+    .all(request.params.id).map((row: any) => row.folderId);
 
-  return { item, parts: partsWithSubtitles, images: imageAssets, tags: tags.map((tag) => tag.name), comments, related };
+  return { item, parts: partsWithSubtitles, images: imageAssets, tags: tags.map((tag) => tag.name), comments, related, favoritedFolderIds };
 });
 
 app.get<{ Params: { id: string; variant: string } }>("/media/images/:id/:variant", async (request, reply) => {
@@ -465,6 +497,39 @@ app.put<{ Params: { id: string }; Body: { reaction?: "like" | "dislike" | null }
     `).run(request.params.id, request.body.reaction, nowIso());
   }
   return { reaction: request.body.reaction ?? null };
+});
+
+app.put<{ Params: { id: string }; Body: Record<string, never> | undefined }>("/items/:id/coin", async (request) => {
+  const itemId = request.params.id;
+  const current = db.prepare("SELECT coined FROM item_preferences WHERE item_id = ?").get(itemId) as
+    | { coined: number }
+    | undefined;
+  const nextCoined = current?.coined ? 0 : 1;
+  const timestamp = nowIso();
+  db.prepare(`
+    INSERT INTO item_preferences (item_id, reaction, coined, coined_at, updated_at) VALUES (?, NULL, ?, ?, ?)
+    ON CONFLICT(item_id) DO UPDATE SET coined = excluded.coined, coined_at = excluded.coined_at, updated_at = excluded.updated_at
+  `).run(itemId, nextCoined, nextCoined ? timestamp : null, timestamp);
+
+  if (nextCoined === 1) {
+    const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(itemId) as
+      | { id: string; creator_id: string | null; category_id: string | null }
+      | undefined;
+    if (item) {
+      db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(createId("int"), "item", itemId, "coin", 1, timestamp);
+      if (item.creator_id) {
+        db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(createId("int"), "creator", item.creator_id, "coin", 1, timestamp);
+      }
+      if (item.category_id) {
+        db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(createId("int"), "category", item.category_id, "coin", 1, timestamp);
+      }
+    }
+  }
+
+  return { coined: Boolean(nextCoined) };
 });
 
 app.put<{ Params: { id: string }; Body: { blacklisted?: boolean } }>("/creators/:id/blacklist", async (request) => {
@@ -591,6 +656,88 @@ app.post<{ Params: { id: string }; Body: CommentBody }>("/items/:id/comments", a
   db.prepare("INSERT INTO comments (id, item_id, body, at_seconds, created_at) VALUES (?, ?, ?, ?, ?)")
     .run(id, request.params.id, body, request.body.atSeconds ?? null, nowIso());
   return reply.code(201).send({ id });
+});
+
+app.get("/me/favorites", async () => ({
+  folders: db.prepare(`
+    SELECT ff.id, ff.name, ff.created_at AS createdAt,
+      COUNT(f.id) AS itemCount,
+      COALESCE(MAX(f.created_at), ff.created_at) AS updatedAt
+    FROM favorite_folders ff
+    LEFT JOIN favorites f ON f.folder_id = ff.id
+    GROUP BY ff.id
+    ORDER BY updatedAt DESC
+  `).all()
+}));
+
+app.post<{ Body: FavoriteFolderBody }>("/me/favorites/folders", async (request, reply) => {
+  const name = request.body.name?.trim() ?? "";
+  if (!name || name.length > 50) {
+    return reply.code(400).send({ error: "Invalid folder name" });
+  }
+  const id = createId("favfolder");
+  const createdAt = nowIso();
+  db.prepare("INSERT INTO favorite_folders (id, name, created_at) VALUES (?, ?, ?)").run(id, name, createdAt);
+  return reply.code(201).send({ id, name, createdAt });
+});
+
+app.delete<{ Params: { id: string } }>("/me/favorites/folders/:id", async (request) => {
+  db.prepare("DELETE FROM favorite_folders WHERE id = ?").run(request.params.id);
+  return { ok: true };
+});
+
+app.post<{ Params: { id: string }; Body: FavoriteItemBody }>("/items/:id/favorites", async (request, reply) => {
+  const itemId = request.params.id;
+  const item = db.prepare("SELECT id FROM media_items WHERE id = ?").get(itemId);
+  if (!item) {
+    return reply.code(404).send({ error: "Item not found" });
+  }
+
+  let folderId = request.body.folderId;
+  if (!folderId) {
+    const existing = db.prepare("SELECT id FROM favorite_folders LIMIT 1").get() as { id: string } | undefined;
+    if (existing) {
+      folderId = existing.id;
+    } else {
+      folderId = createId("favfolder");
+      db.prepare("INSERT INTO favorite_folders (id, name, created_at) VALUES (?, ?, ?)")
+        .run(folderId, "默认收藏夹", nowIso());
+    }
+  }
+
+  const favoriteId = createId("fav");
+  const createdAt = nowIso();
+  db.prepare(`
+    INSERT INTO favorites (id, folder_id, item_id, created_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(folder_id, item_id) DO NOTHING
+  `).run(favoriteId, folderId, itemId, createdAt);
+  return reply.code(201).send({ folderId, favorited: true });
+});
+
+app.delete<{ Params: { id: string }; Querystring: { folderId?: string } }>("/items/:id/favorites", async (request) => {
+  if (request.query.folderId) {
+    db.prepare("DELETE FROM favorites WHERE item_id = ? AND folder_id = ?").run(request.params.id, request.query.folderId);
+  } else {
+    db.prepare("DELETE FROM favorites WHERE item_id = ?").run(request.params.id);
+  }
+  return { ok: true };
+});
+
+app.get<{ Params: { id: string } }>("/me/favorites/folders/:id/items", async (request) => {
+  const rows = db.prepare(`
+    SELECT f.id AS favoriteId, f.created_at AS favoritedAt, f.folder_id AS folderId, f.item_id AS itemId
+    FROM favorites f WHERE f.folder_id = ? ORDER BY f.created_at DESC
+  `).all(request.params.id) as { favoriteId: string; favoritedAt: string; folderId: string; itemId: string }[];
+  const feedItems = getFeedItemsByIds(rows.map((row) => row.itemId));
+  const itemsById = new Map(feedItems.map((item) => [item.id, item]));
+  const items = rows
+    .map((row) => {
+      const item = itemsById.get(row.itemId);
+      if (!item) return null;
+      return { item, favoritedAt: row.favoritedAt, folderId: row.folderId };
+    })
+    .filter((entry) => entry !== null);
+  return { items };
 });
 
 app.delete<{ Params: { id: string } }>("/items/:id/watch-progress", async (request) => {

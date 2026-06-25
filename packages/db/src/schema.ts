@@ -137,7 +137,7 @@ export const interactions = sqliteTable(
     id: text("id").primaryKey(),
     targetType: text("target_type", { enum: ["item", "creator", "category", "tag"] }).notNull(),
     targetId: text("target_id").notNull(),
-    kind: text("kind", { enum: ["like", "dislike", "watch", "finish", "blacklist_up"] }).notNull(),
+    kind: text("kind", { enum: ["like", "dislike", "watch", "finish", "blacklist_up", "coin"] }).notNull(),
     value: real("value").notNull().default(1),
     createdAt: text("created_at").notNull()
   },
@@ -202,6 +202,8 @@ export const mediaSubtitles = sqliteTable(
 export const itemPreferences = sqliteTable("item_preferences", {
   itemId: text("item_id").primaryKey().references(() => mediaItems.id),
   reaction: text("reaction", { enum: ["like", "dislike"] }),
+  coined: integer("coined", { mode: "boolean" }).notNull().default(false),
+  coinedAt: text("coined_at"),
   updatedAt: text("updated_at").notNull()
 });
 
@@ -210,3 +212,24 @@ export const creatorPreferences = sqliteTable("creator_preferences", {
   blacklisted: integer("blacklisted", { mode: "boolean" }).notNull().default(false),
   updatedAt: text("updated_at").notNull()
 });
+
+export const favoriteFolders = sqliteTable("favorite_folders", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  createdAt: text("created_at").notNull()
+});
+
+export const favorites = sqliteTable(
+  "favorites",
+  {
+    id: text("id").primaryKey(),
+    folderId: text("folder_id").notNull().references(() => favoriteFolders.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull().references(() => mediaItems.id, { onDelete: "cascade" }),
+    createdAt: text("created_at").notNull()
+  },
+  (table) => ({
+    byFolder: index("favorites_folder_idx").on(table.folderId),
+    byItem: index("favorites_item_idx").on(table.itemId),
+    byPair: uniqueIndex("favorites_pair_idx").on(table.folderId, table.itemId)
+  })
+);

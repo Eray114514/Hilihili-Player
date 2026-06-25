@@ -2,7 +2,7 @@ export const videoExtensions = [".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi",
 export const imageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"] as const;
 
 export type MediaKind = "video" | "image" | "post";
-export type InteractionKind = "like" | "dislike" | "watch" | "finish" | "blacklist_up";
+export type InteractionKind = "like" | "dislike" | "watch" | "finish" | "blacklist_up" | "coin";
 export type StructureStatus = "standard" | "fallback";
 export type ThumbnailStatus = "pending" | "ready" | "failed";
 export type ScanStatus = "queued" | "running" | "complete" | "failed";
@@ -71,6 +71,20 @@ export type DirectoryEntry = {
   name: string;
   path: string;
   isDirectory: boolean;
+};
+
+export type FavoriteFolder = {
+  id: string;
+  name: string;
+  itemCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FavoriteEntry = {
+  item: FeedItem;
+  folderId: string;
+  favoritedAt: string;
 };
 
 export function isVideoPath(pathname: string) {
