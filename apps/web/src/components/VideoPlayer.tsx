@@ -31,6 +31,8 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const latestProgressRef = useRef<{ partId: string; positionSeconds: number; durationSeconds: number } | null>(null);
   const lastSavedRef = useRef<{ partId: string; positionSeconds: number } | null>(null);
   const completionSentRef = useRef<string | null>(null);
+  const subtitleRawRef = useRef<Map<string, string>>(new Map());
+  const speedBtnRef = useRef<HTMLButtonElement>(null);
 
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -122,34 +124,44 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     if (!part || part.subtitles.length === 0) return;
 
     let ignore = false;
+    let timer: number | null = null;
+    subtitleRawRef.current = new Map();
+
     const load = async () => {
       const map = new Map<string, SubtitleCue[]>();
+      const rawMap = new Map<string, string>();
+      let changed = false;
       for (const track of part.subtitles) {
-        const url = assetUrl(track.url);
-        if (!url) continue;
+        const base = assetUrl(track.url);
+        if (!base) continue;
         try {
-          const response = await fetch(url);
+          const response = await fetch(`${base}?t=${Date.now()}`);
           if (!response.ok) continue;
           const text = decodeSubtitle(await response.arrayBuffer());
-          const cues = parseSubtitle(text);
-          map.set(track.id, cues);
+          rawMap.set(track.id, text);
+          if (subtitleRawRef.current.get(track.id) !== text) changed = true;
+          map.set(track.id, parseSubtitle(text));
         } catch {
-          console.warn(`[player] failed to load subtitle: ${url}`);
+          console.warn(`[player] failed to load subtitle: ${base}`);
         }
       }
-      if (!ignore) {
-        setSubtitleTracks(map);
-        const video = videoRef.current;
-        if (video) {
-          setSubtitleCues({
-            primary: primarySubtitle ? findActiveCue(map.get(primarySubtitle.id) ?? [], video.currentTime) : null,
-            secondary: secondarySubtitle ? findActiveCue(map.get(secondarySubtitle.id) ?? [], video.currentTime) : null
-          });
-        }
+      if (ignore || !changed) return;
+      subtitleRawRef.current = rawMap;
+      setSubtitleTracks(map);
+      const video = videoRef.current;
+      if (video) {
+        setSubtitleCues({
+          primary: primarySubtitle ? findActiveCue(map.get(primarySubtitle.id) ?? [], video.currentTime) : null,
+          secondary: secondarySubtitle ? findActiveCue(map.get(secondarySubtitle.id) ?? [], video.currentTime) : null
+        });
       }
     };
     void load();
-    return () => { ignore = true; };
+    timer = window.setInterval(load, 5000);
+    return () => {
+      ignore = true;
+      if (timer) window.clearInterval(timer);
+    };
   }, [part, primarySubtitle, secondarySubtitle]);
 
   const showControls = useCallback(() => {
@@ -236,6 +248,29 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     document.addEventListener("fullscreenchange", onFsChange);
     return () => document.removeEventListener("fullscreenchange", onFsChange);
   }, []);
+
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      const shell = shellRef.current;
+      if (!shell) return;
+      if (shell.contains(event.target as Node)) return;
+      setControlsVisible(false);
+      if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
+
+  useEffect(() => {
+    const btn = speedBtnRef.current;
+    if (!btn) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      cycleSpeed(event.deltaY > 0 ? 1 : -1);
+    };
+    btn.addEventListener("wheel", onWheel, { passive: false });
+    return () => btn.removeEventListener("wheel", onWheel);
+  }, [cycleSpeed]);
 
   useEffect(() => {
     if (!part) return;
@@ -336,7 +371,9 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const hoverPct = hoverRatio * 100;
 
   const subtitlePositionClasses = subtitlePosition === "bottom"
-    ? isFullscreen ? "bottom-12 justify-end" : "bottom-[5.5rem] justify-end"
+    ? controlsVisible
+      ? isFullscreen ? "bottom-12 justify-end" : "bottom-[5.5rem] justify-end"
+      : "bottom-4 justify-end"
     : isFullscreen ? "top-4 justify-start" : "top-6 justify-start";
 
   return (
@@ -355,8 +392,8 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         if (event.key === "ArrowRight") { event.preventDefault(); seekBy(5); }
         if (event.key.toLowerCase() === "f") { event.preventDefault(); toggleFullscreen(); }
         if (event.key.toLowerCase() === "m") { event.preventDefault(); setMuted((v) => !v); }
-        if (event.key === "ArrowUp") { event.preventDefault(); setVolume((v) => Math.min(1, v + 0.1)); }
-        if (event.key === "ArrowDown") { event.preventDefault(); setVolume((v) => Math.max(0, v - 0.1)); }
+        if (event.key === "ArrowUp") { event.preventDefault(); cycleSpeed(-1); }
+        if (event.key === "ArrowDown") { event.preventDefault(); cycleSpeed(1); }
         if (event.key.toLowerCase() === "c") {
           event.preventDefault();
           if (hasSubtitles) {
@@ -474,7 +511,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
 
       {showSubtitles ? (
         <div
-          className={`pointer-events-none absolute inset-x-0 z-10 flex flex-col items-center px-4 text-center sm:px-8 ${subtitlePositionClasses}`}
+          className={`pointer-events-none absolute inset-x-0 z-10 flex flex-col items-center px-4 text-center transition-[bottom] duration-200 ease-out sm:px-8 ${subtitlePositionClasses}`}
         >
           {subtitleCues.primary ? (
             <div className="max-w-[90%] rounded bg-black/70 px-3 py-1 text-base font-medium leading-snug text-white shadow-lg [text-shadow:0_1px_2px_rgba(0,0,0,.8)]">
@@ -482,7 +519,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
             </div>
           ) : null}
           {subtitleMode === "bilingual" && (subtitleCues.primary?.secondaryText || subtitleCues.secondary) ? (
-            <div className="mt-1.5 max-w-[85%] rounded bg-black/60 px-2 py-0.5 text-xs leading-snug text-white/90 shadow-md [text-shadow:0_1px_2px_rgba(0,0,0,.8)]">
+            <div className="mt-0.5 max-w-[85%] rounded bg-black/60 px-1.5 py-px text-[0.625rem] leading-tight text-white/85 shadow-md [text-shadow:0_1px_2px_rgba(0,0,0,.8)]">
               {subtitleCues.primary?.secondaryText || subtitleCues.secondary?.primaryText}
             </div>
           ) : null}
@@ -642,9 +679,9 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
 
             <div className="relative">
               <button
+                ref={speedBtnRef}
                 className="player-btn min-w-[2.75rem] px-2 text-sm font-medium"
                 onClick={() => setSpeedMenuOpen((v) => !v)}
-                onWheel={(event) => { event.preventDefault(); cycleSpeed(event.deltaY > 0 ? 1 : -1); }}
                 aria-label="播放速度"
               >
                 {speed}×
