@@ -81,12 +81,9 @@ function ProfileMenu() {
   ];
   return (
     <details className="group/profile relative">
-      <summary className="relative grid h-10 w-10 place-items-center rounded-full outline-none ring-offset-2 ring-offset-[#0d0f14] focus-visible:ring-2 focus-visible:ring-[var(--accent)]" aria-label="打开个人菜单">
+      <summary className="grid h-10 w-10 place-items-center rounded-full outline-none ring-offset-2 ring-offset-[#0d0f14] transition hover:ring-1 hover:ring-white/20 focus-visible:ring-2 focus-visible:ring-[var(--accent)]" aria-label="打开个人菜单">
         <span className="grid h-10 w-10 place-items-center overflow-hidden rounded-full bg-[linear-gradient(145deg,#87f5df_0%,#36bfa9_52%,#6957d9_100%)] font-black text-[#07110f] shadow-lg shadow-teal-950/30 ring-1 ring-white/15">
           H
-        </span>
-        <span className="pointer-events-none absolute bottom-0 right-0 grid h-4 w-4 place-items-center rounded-full bg-[#0d0f14] text-[var(--accent)] ring-2 ring-[#0d0f14]">
-          <Play size={8} fill="currentColor" />
         </span>
       </summary>
       <div className="absolute right-0 top-12 z-50 w-64 overflow-hidden rounded-2xl border border-white/10 bg-[#171920] p-2 shadow-2xl shadow-black/50">

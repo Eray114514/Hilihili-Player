@@ -44,8 +44,14 @@ export default function WatchPage() {
 
   async function toggleReaction(next: Exclude<Reaction, null>) {
     const value = reaction === next ? null : next;
+    const previous = reaction;
     setReaction(value);
-    await putJson(`/items/${params.id}/reaction`, { reaction: value });
+    try {
+      await putJson(`/items/${params.id}/reaction`, { reaction: value });
+    } catch (error) {
+      setReaction(previous);
+      console.error("[watch] 保存点赞失败", error);
+    }
   }
 
   async function toggleBlacklist() {
@@ -57,8 +63,15 @@ export default function WatchPage() {
   }
 
   async function toggleCoin() {
-    const response = await putJson<{ coined: boolean }>(`/items/${params.id}/coin`, {});
-    setCoined(response.coined);
+    const next = !coined;
+    setCoined(next);
+    try {
+      const response = await putJson<{ coined: boolean }>(`/items/${params.id}/coin`, {});
+      setCoined(response.coined);
+    } catch (error) {
+      setCoined(!next);
+      console.error("[watch] 保存投币失败", error);
+    }
   }
 
   async function toggleFavorite(folderId: string) {
