@@ -51,7 +51,11 @@ type FavoriteItemBody = {
 };
 
 const app = Fastify({ logger: true });
-await app.register(cors, { origin: true });
+await app.register(cors, {
+  origin: true,
+  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+});
 
 const db = getSqlite();
 

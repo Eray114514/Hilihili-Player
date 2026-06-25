@@ -458,12 +458,12 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
             const video = event.currentTarget;
             const dur = video.duration || 0;
             setDuration(dur);
-            latestProgressRef.current = { partId, positionSeconds: video.currentTime, durationSeconds: dur };
             if (resumedPartRef.current !== partId && resumePosition > 0 && resumePosition < dur - 3) {
               video.currentTime = resumePosition;
               setCurrent(resumePosition);
               resumedPartRef.current = partId;
             }
+            latestProgressRef.current = { partId, positionSeconds: video.currentTime, durationSeconds: dur };
             void video.play().catch(() => setAutoPlayBlocked(true));
           }}
           onTimeUpdate={(event) => {
