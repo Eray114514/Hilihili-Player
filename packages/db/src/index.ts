@@ -221,6 +221,20 @@ function migrate(db: Database.Database) {
 
   db.exec(`
     UPDATE watch_progress SET started_at = updated_at WHERE started_at IS NULL;
+    -- Older scanners rebuilt every media_parts row during each startup scan.
+    -- Recover affected history by attaching it to the first playable part.
+    UPDATE watch_progress
+    SET part_id = (
+      SELECT media_parts.id FROM media_parts
+      WHERE media_parts.item_id = watch_progress.item_id
+      ORDER BY media_parts.part_index ASC
+      LIMIT 1
+    )
+    WHERE part_id IS NULL
+      AND EXISTS (
+        SELECT 1 FROM media_parts
+        WHERE media_parts.item_id = watch_progress.item_id
+      );
     UPDATE watch_progress
     SET finished = CASE WHEN EXISTS (
       SELECT 1

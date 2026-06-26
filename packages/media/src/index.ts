@@ -511,15 +511,7 @@ function indexMultiPartVideo(
     structureStatus: "standard"
   }, context);
 
-  clearParts(db, itemId);
-
-  videos.forEach((path, index) => {
-    const partName = basename(path, extname(path));
-    const pKey = partName.match(/^p(\d+)$/i)?.[0].toUpperCase();
-    const titleForPart = pKey && info.p_titles?.[pKey] ? info.p_titles[pKey] : cleanTitle(partName);
-    const stat = statSync(path);
-    upsertPartWithSubtitles(db, itemId, titleForPart, index + 1, path, stat.size, fingerprintFile(path));
-  });
+  replaceParts(db, itemId, videos, info);
 
   db.prepare("DELETE FROM media_images WHERE item_id = ?").run(itemId);
   applyTags(db, itemId, library.root_path, folderPath, tagsIndex);
@@ -640,8 +632,7 @@ function indexSingleFile(
   }, context);
 
   if (kind === "video") {
-    clearParts(db, itemId);
-    upsertPartWithSubtitles(db, itemId, title, 1, filePath, fileStat.size, fingerprintFile(filePath));
+    replaceParts(db, itemId, [filePath], sidecarInfo);
     db.prepare("DELETE FROM media_images WHERE item_id = ?").run(itemId);
   } else {
     clearParts(db, itemId);
@@ -822,7 +813,21 @@ function addResolvedTag(
 }
 
 function replaceParts(db: SqliteDatabase, itemId: string, videos: string[], info: InfoJson) {
-  clearParts(db, itemId);
+  // Keep a part row when the file is still present. watch_progress references
+  // media_parts.id, so deleting and recreating every row on each startup scan
+  // silently disconnects every saved resume position after an image update.
+  const paths = new Set(videos);
+  const staleParts = db.prepare("SELECT id, path FROM media_parts WHERE item_id = ?")
+    .all(itemId) as { id: string; path: string }[];
+  const deletePart = db.prepare("DELETE FROM media_parts WHERE id = ?");
+  const clearProgressPart = db.prepare("UPDATE watch_progress SET part_id = NULL WHERE item_id = ? AND part_id = ?");
+  for (const part of staleParts) {
+    if (!paths.has(part.path)) {
+      clearProgressPart.run(itemId, part.id);
+      deletePart.run(part.id);
+    }
+  }
+
   videos.forEach((path, index) => {
     const partName = basename(path, extname(path));
     const pKey = partName.match(/^p(\d+)$/i)?.[0].toUpperCase();

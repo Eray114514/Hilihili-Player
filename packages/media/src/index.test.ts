@@ -70,6 +70,9 @@ test("scanner creates posts, galleries and stable playable items", async () => {
   const singlePart = db.prepare("SELECT id FROM media_parts WHERE item_id = ?").get(singleVideo?.id) as { id: string };
   db.prepare("INSERT INTO watch_progress (item_id, part_id, position_seconds, finished, updated_at) VALUES (?, ?, 12, 0, ?)")
     .run(singleVideo?.id, singlePart.id, nowIso());
+  assert.equal(await scanLibrary(libraryId), 4, "a restart scan should preserve the media part used by saved progress");
+  const resumedPart = db.prepare("SELECT part_id AS partId FROM watch_progress WHERE item_id = ?").get(singleVideo?.id) as { partId: string };
+  assert.equal(resumedPart.partId, singlePart.id);
 
   const originalVideo = join(creator, "测试UP_单P.mp4");
   const movedCreator = join(root, "生活", "新UP");
