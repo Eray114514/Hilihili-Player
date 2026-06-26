@@ -220,10 +220,10 @@ export default function WatchPage() {
               </div>
               <div className="mt-4 flex flex-wrap items-center gap-2">
                 {tagDetails.map((tag) => (
-                  <span key={tag.id} className={`group inline-flex min-h-8 items-center gap-1.5 rounded-full border px-3 text-xs transition ${tag.source === "manual" ? "border-[rgba(94,234,212,.35)] bg-[rgba(94,234,212,.1)] text-[var(--accent)]" : "border-white/8 bg-white/[.045] text-white/50"}`}>
-                    #{tag.name}
-                    <button disabled={tagBusy === tag.id} className="grid h-5 w-5 place-items-center rounded-full text-white/35 opacity-70 transition hover:bg-white/10 hover:text-white disabled:opacity-30 md:opacity-0 md:group-hover:opacity-100" onClick={() => void removeTag(tag.id)} aria-label={`删除标签 ${tag.name}`}>
-                      <X size={13} />
+                  <span key={tag.id} className={`inline-flex min-h-8 items-center gap-1 rounded-full border py-1 pl-2.5 pr-1.5 text-xs transition ${tag.source === "manual" ? "border-[rgba(94,234,212,.35)] bg-[rgba(94,234,212,.1)] text-[var(--accent)]" : "border-white/8 bg-white/[.045] text-white/50"}`}>
+                    <span>{tag.name}</span>
+                    <button disabled={tagBusy === tag.id} className="grid h-4 w-4 shrink-0 place-items-center rounded-full text-current/60 transition hover:bg-white/10 hover:text-white disabled:opacity-30" onClick={() => void removeTag(tag.id)} aria-label={`删除标签 ${tag.name}`}>
+                      <X size={12} />
                     </button>
                   </span>
                 ))}
