@@ -3,10 +3,12 @@
 import { CheckCircle2, Clock3, Coins, Heart, History, Play, RotateCcw, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { AnimatePresence, motion } from "motion/react";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { ApiImage } from "@/components/ApiImage";
 import { AppShell } from "@/components/AppShell";
 import { assetUrl, deleteJson, getJson, putJson, type ActivityEntry, type ActivityResponse } from "@/lib/api";
+import { slideUp } from "@/lib/motion";
 
 type ActivityTab = "continue" | "history" | "completed" | "likes" | "coins";
 
@@ -105,22 +107,32 @@ function HistoryPageInner() {
       </div>
 
       {!data ? <ActivitySkeleton /> : entries.length === 0 ? (
-        <div className="grid min-h-64 place-items-center rounded-xl border border-dashed border-white/12 bg-white/[0.02] text-center">
+        <div className="animate-fade-in grid min-h-64 place-items-center rounded-xl border border-dashed border-white/12 bg-white/[0.02] text-center">
           <div><Clock3 className="mx-auto text-white/25" size={34} /><p className="mt-3 font-medium">这里暂时空空的</p><p className="mt-1 text-sm text-white/42">去首页逛一逛，新的记录会自动出现在这里。</p></div>
         </div>
       ) : (
-        <div className="space-y-3">
-          {entries.map((entry) => (
-            <ActivityCard
-              key={entry.item.id}
-              entry={entry}
-              tab={tab}
-              busy={busyId === entry.item.id}
-              onRemove={() => void removeProgress(entry)}
-              onUnlike={() => void unlike(entry)}
-              onUncoin={() => void uncoin(entry)}
-            />
-          ))}
+        <div key={tab} className="animate-fade-in space-y-3">
+          <AnimatePresence initial={false}>
+            {entries.map((entry) => (
+              <motion.div
+                key={entry.item.id}
+                layout
+                variants={slideUp}
+                initial="hidden"
+                animate="visible"
+                exit="exit"
+              >
+                <ActivityCard
+                  entry={entry}
+                  tab={tab}
+                  busy={busyId === entry.item.id}
+                  onRemove={() => void removeProgress(entry)}
+                  onUnlike={() => void unlike(entry)}
+                  onUncoin={() => void uncoin(entry)}
+                />
+              </motion.div>
+            ))}
+          </AnimatePresence>
         </div>
       )}
     </AppShell>
@@ -177,5 +189,5 @@ function formatActivityDate(value: string | null) {
 }
 
 function ActivitySkeleton() {
-  return <div className="space-y-3 animate-pulse">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-36 rounded-xl bg-white/[0.035]" />)}</div>;
+  return <div className="space-y-3 skeleton-shimmer">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-36 rounded-xl bg-white/[0.035]" />)}</div>;
 }

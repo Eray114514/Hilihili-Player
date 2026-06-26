@@ -75,17 +75,16 @@ function HeaderSearch() {
 
   const shouldShowPanel = focused && value.trim() === "";
 
-  // Fetch history the first time the panel opens.
-  useEffect(() => {
-    if (!shouldShowPanel || loaded) return;
-    let disposed = false;
+  // Fetch history once on first focus (event-driven to avoid setState-in-effect).
+  const loadHistoryOnce = () => {
+    if (loaded) return;
+    setLoaded(true);
     setLoading(true);
     getSearchHistory()
-      .then((data) => { if (!disposed) setItems(data.items); })
-      .catch(() => { if (!disposed) setItems([]); })
-      .finally(() => { if (!disposed) { setLoading(false); setLoaded(true); } });
-    return () => { disposed = true; };
-  }, [shouldShowPanel, loaded]);
+      .then((data) => setItems(data.items))
+      .catch(() => setItems([]))
+      .finally(() => setLoading(false));
+  };
 
   // Clear any pending blur timeout on unmount.
   useEffect(() => () => { if (blurTimeoutRef.current) clearTimeout(blurTimeoutRef.current); }, []);
@@ -96,6 +95,7 @@ function HeaderSearch() {
       blurTimeoutRef.current = null;
     }
     setFocused(true);
+    loadHistoryOnce();
   };
 
   const handleBlur = () => {
@@ -126,7 +126,6 @@ function HeaderSearch() {
         onBlur={handleBlur}
         placeholder="搜索视频、UP 主、分区或标签"
         aria-label="搜索媒体库"
-        aria-expanded={shouldShowPanel}
         aria-controls="header-search-history"
         autoComplete="off"
         className="h-10 w-full rounded-xl border border-white/9 bg-white/[0.055] pl-10 pr-20 text-sm text-white outline-none transition placeholder:text-white/30 hover:bg-white/[0.075] focus:border-[rgba(94,234,212,.42)] focus:bg-[#161b20] focus:shadow-[0_0_0_3px_rgba(94,234,212,.08)]"

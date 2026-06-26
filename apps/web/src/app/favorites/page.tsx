@@ -2,10 +2,12 @@
 
 import { ArrowLeft, Bookmark, BookmarkPlus, Clock3, Folder, Trash2 } from "lucide-react";
 import Link from "next/link";
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState, type FormEvent } from "react";
 import { ApiImage } from "@/components/ApiImage";
 import { AppShell, EmptyState } from "@/components/AppShell";
 import { assetUrl, deleteJson, getJson, postJson, type FavoriteFolder } from "@/lib/api";
+import { slideUp } from "@/lib/motion";
 import type { FeedItem } from "@hilihili/shared";
 
 export default function FavoritesPage() {
@@ -100,15 +102,25 @@ export default function FavoritesPage() {
             </div>
           ) : (
             <div className="space-y-3">
-              {items.map((entry) => (
-                <FavoriteCard
-                  key={entry.item.id}
-                  item={entry.item}
-                  favoritedAt={entry.favoritedAt}
-                  busy={busyId === entry.item.id}
-                  onRemove={() => void removeItem(entry.item.id)}
-                />
-              ))}
+              <AnimatePresence initial={false}>
+                {items.map((entry) => (
+                  <motion.div
+                    key={entry.item.id}
+                    layout
+                    variants={slideUp}
+                    initial="hidden"
+                    animate="visible"
+                    exit="exit"
+                  >
+                    <FavoriteCard
+                      item={entry.item}
+                      favoritedAt={entry.favoritedAt}
+                      busy={busyId === entry.item.id}
+                      onRemove={() => void removeItem(entry.item.id)}
+                    />
+                  </motion.div>
+                ))}
+              </AnimatePresence>
             </div>
           )}
         </>
@@ -140,40 +152,51 @@ export default function FavoritesPage() {
 
           {loading ? (
             <FavoritesSkeleton />
-          ) : folders.length === 0 ? (
-            <EmptyState
-              title="还没有收藏夹"
-              body="在观看页点击「收藏」按钮，第一个收藏夹会自动创建。"
-            />
           ) : (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {folders.map((folder) => (
-                <div
-                  key={folder.id}
-                  className="group relative rounded-xl border border-white/8 bg-white/[0.028] p-4 transition hover:border-[rgba(94,234,212,.25)] hover:bg-white/[0.04]"
-                >
-                  <button className="block w-full text-left" onClick={() => setActiveFolder(folder)}>
-                    <div className="flex items-center gap-3">
-                      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
-                        <Folder size={20} />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate font-medium">{folder.name}</div>
-                        <p className="mt-0.5 text-xs text-white/42">
-                          {folder.itemCount} 个收藏 · {formatDate(folder.updatedAt)}
-                        </p>
-                      </div>
-                    </div>
-                  </button>
-                  <button
-                    className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-lg text-white/30 transition hover:bg-white/8 hover:text-[var(--danger)]"
-                    aria-label="删除收藏夹"
-                    onClick={() => void deleteFolder(folder)}
-                  >
-                    <Trash2 size={15} />
-                  </button>
+            <div className="animate-fade-in">
+              {folders.length === 0 ? (
+                <EmptyState
+                  title="还没有收藏夹"
+                  body="在观看页点击「收藏」按钮，第一个收藏夹会自动创建。"
+                />
+              ) : (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <AnimatePresence initial={false}>
+                    {folders.map((folder) => (
+                      <motion.div
+                        key={folder.id}
+                        layout
+                        variants={slideUp}
+                        initial="hidden"
+                        animate="visible"
+                        exit="exit"
+                        className="group relative rounded-xl border border-white/8 bg-white/[0.028] p-4 transition hover:border-[rgba(94,234,212,.25)] hover:bg-white/[0.04]"
+                      >
+                        <button className="block w-full text-left" onClick={() => setActiveFolder(folder)}>
+                          <div className="flex items-center gap-3">
+                            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
+                              <Folder size={20} />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-medium">{folder.name}</div>
+                              <p className="mt-0.5 text-xs text-white/42">
+                                {folder.itemCount} 个收藏 · {formatDate(folder.updatedAt)}
+                              </p>
+                            </div>
+                          </div>
+                        </button>
+                        <button
+                          className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-lg text-white/30 transition hover:bg-white/8 hover:text-[var(--danger)]"
+                          aria-label="删除收藏夹"
+                          onClick={() => void deleteFolder(folder)}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
                 </div>
-              ))}
+              )}
             </div>
           )}
         </>
@@ -248,7 +271,7 @@ function Stat({ label, value }: { label: string; value: number }) {
 
 function FavoritesSkeleton() {
   return (
-    <div className="grid animate-pulse grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid skeleton-shimmer grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {Array.from({ length: 3 }, (_, index) => (
         <div key={index} className="h-20 rounded-xl bg-white/[0.035]" />
       ))}
