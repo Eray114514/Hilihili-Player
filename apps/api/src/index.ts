@@ -4,7 +4,7 @@ import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { platform } from "node:os";
 import { lookup } from "mime-types";
-import { createId, getSqlite, nowIso } from "@hilihili/db";
+import { clearSearchHistory, createId, deleteSearchHistory, getSqlite, listSearchHistory, nowIso, upsertSearchHistory } from "@hilihili/db";
 import { addManualTagToItem, enqueueScan, listItemTags, removeTagFromItem } from "@hilihili/media";
 import { getFeedItemsByIds, getRecommendedFeed } from "@hilihili/recommendation";
 import type { DirectoryEntry, FeedItem, InteractionKind } from "@hilihili/shared";
@@ -202,6 +202,13 @@ app.get<{ Querystring: { q?: string; limit?: string; offset?: string } }>("/sear
     LIMIT ? OFFSET ?
   `).all(...params, query, `${query}%`, pattern, pattern, limit, offset) as { id: string }[];
   const items = getFeedItemsByIds(rows.map((row) => row.id));
+  if (total > 0 && query) {
+    try {
+      upsertSearchHistory(query);
+    } catch (error) {
+      request.log.error({ err: error }, "Failed to record search history");
+    }
+  }
   return { query, items, total, hasMore: offset + items.length < total };
 });
 
@@ -675,6 +682,20 @@ app.put("/me/messages/read", async () => {
   const timestamp = nowIso();
   db.prepare("UPDATE creator_messages SET read_at = ? WHERE read_at IS NULL").run(timestamp);
   return { readAt: timestamp };
+});
+
+app.get("/me/search-history", async () => ({
+  items: listSearchHistory(20)
+}));
+
+app.delete("/me/search-history", async () => {
+  clearSearchHistory();
+  return { ok: true };
+});
+
+app.delete<{ Params: { id: string } }>("/me/search-history/:id", async (request) => {
+  deleteSearchHistory(request.params.id);
+  return { ok: true };
 });
 
 app.get<{ Params: { id: string }; Headers: { range?: string } }>("/media/parts/:id/stream", async (request, reply) => {

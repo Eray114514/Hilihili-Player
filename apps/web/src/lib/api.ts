@@ -1,4 +1,4 @@
-import type { DirectoryEntry, FeedItem, Library, Reaction, ScanRun, ThumbnailStatus } from "@hilihili/shared";
+import type { DirectoryEntry, FeedItem, Library, Reaction, ScanRun, SearchHistoryItem, ThumbnailStatus } from "@hilihili/shared";
 
 function getApiBase() {
   if (typeof window !== "undefined") {
@@ -196,3 +196,15 @@ export type FavoriteListResponse = {
 export type FavoriteFolderItemsResponse = {
   items: { item: FeedItem; favoritedAt: string; folderId: string }[];
 };
+
+export async function getSearchHistory(): Promise<{ items: SearchHistoryItem[] }> {
+  return getJson<{ items: SearchHistoryItem[] }>("/me/search-history");
+}
+
+export async function clearSearchHistory(): Promise<void> {
+  await deleteJson<{ ok: boolean }>("/me/search-history");
+}
+
+export async function deleteSearchHistory(id: string): Promise<void> {
+  await deleteJson<{ ok: boolean }>(`/me/search-history/${encodeURIComponent(id)}`);
+}

@@ -72,7 +72,7 @@ export default function CreatorPage() {
   const banner = assetUrl(creator.bannerUrl);
   return (
     <AppShell wide>
-      <section className="overflow-hidden rounded-3xl border border-white/10 bg-[#11151c] shadow-[0_24px_80px_rgba(0,0,0,.25)]">
+      <section className="animate-fade-in overflow-hidden rounded-3xl border border-white/10 bg-[#11151c] shadow-[0_24px_80px_rgba(0,0,0,.25)]">
         <div className="relative h-36 overflow-hidden sm:h-48">
           {banner ? <ApiImage src={banner} alt="" fill priority sizes="(min-width: 768px) 90vw, 100vw" className="object-cover opacity-80" /> : <GeneratedBanner name={creator.name} />}
           <div className="absolute inset-0 bg-[linear-gradient(180deg,transparent_15%,rgba(9,12,17,.78)_100%)]" />
@@ -101,7 +101,7 @@ export default function CreatorPage() {
 
       <section className="mt-9">
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-xs font-medium uppercase tracking-[.18em] text-[var(--accent)]/75">Archive</p><h2 className="mt-1 text-2xl font-semibold">投稿列表</h2></div><div className="filter-group self-start sm:self-auto">{filters.map((filter) => { const Icon = filter.icon; return <button type="button" key={filter.value} className={kind === filter.value ? "active" : ""} onClick={() => { if (kind !== filter.value) { setLoading(true); setFailed(false); setKind(filter.value); } }}><Icon className="mr-1 inline" size={14} />{filter.label}</button>; })}</div></div>
-        <div className="mt-6">{loading ? <GridSkeleton /> : items.length === 0 ? <EmptyState title="这里还没有这类投稿" body="换一个内容分类，或者等待媒体库完成下一次扫描。" /> : <VideoGrid items={items} />}</div>
+        <div className="mt-6">{loading ? <GridSkeleton /> : items.length === 0 ? <EmptyState title="这里还没有这类投稿" body="换一个内容分类，或者等待媒体库完成下一次扫描。" /> : <div className="animate-fade-in"><VideoGrid items={items} /></div>}</div>
         {hasMore ? <div className="flex justify-center pt-10"><button disabled={loadingMore} onClick={() => { const suffix = kind === "all" ? "" : `&kind=${kind}`; setLoadingMore(true); void getJson<CreatorItemsResponse>(`/creators/${params.id}/items?limit=24&offset=${items.length}${suffix}`).then((response) => { setItems((current) => [...current, ...response.items]); setHasMore(response.hasMore); }).finally(() => setLoadingMore(false)); }} className="secondary-button">{loadingMore ? <LoaderCircle className="animate-spin" size={16} /> : null}{loadingMore ? "正在加载…" : "加载更多投稿"}</button></div> : null}
       </section>
     </AppShell>
@@ -114,5 +114,5 @@ function GeneratedBanner({ name }: { name: string }) {
   return <div className="absolute inset-0" style={{ background: `radial-gradient(circle at 18% 12%, hsl(${hue} 70% 56% / .56), transparent 32%), radial-gradient(circle at 85% 18%, hsl(${(hue + 65) % 360} 72% 55% / .38), transparent 36%), linear-gradient(125deg, hsl(${(hue + 220) % 360} 34% 17%), #111820 58%, hsl(${hue} 25% 15%))` }} />;
 }
 
-function CreatorSkeleton() { return <AppShell wide><div className="animate-pulse overflow-hidden rounded-3xl border border-white/8"><div className="h-48 bg-white/5" /><div className="p-7"><div className="h-14 w-14 -mt-20 rounded-full bg-white/10" /><div className="mt-5 h-8 w-52 rounded bg-white/6" /><div className="mt-3 h-4 max-w-xl rounded bg-white/[0.04]" /></div></div><GridSkeleton /></AppShell>; }
-function GridSkeleton() { return <div className="mt-6 grid animate-pulse grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">{Array.from({ length: 10 }, (_, index) => <div key={index}><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-2 h-4 rounded bg-white/5" /></div>)}</div>; }
+function CreatorSkeleton() { return <AppShell wide><div className="skeleton-shimmer overflow-hidden rounded-3xl border border-white/8"><div className="h-48 bg-white/5" /><div className="p-7"><div className="h-14 w-14 -mt-20 rounded-full bg-white/10" /><div className="mt-5 h-8 w-52 rounded bg-white/6" /><div className="mt-3 h-4 max-w-xl rounded bg-white/[0.04]" /></div></div><GridSkeleton /></AppShell>; }
+function GridSkeleton() { return <div className="mt-6 grid skeleton-shimmer grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">{Array.from({ length: 10 }, (_, index) => <div key={index}><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-2 h-4 rounded bg-white/5" /></div>)}</div>; }

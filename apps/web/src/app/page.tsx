@@ -118,10 +118,14 @@ export default function HomePage() {
         </section>
       ) : null}
 
-      {loading ? <HomeSkeleton /> : allItems.length === 0 ? (
-        <EmptyState title="还没有视频" body="去设置里添加一个本机或 NAS 挂载目录，然后扫描媒体库。" />
-      ) : (
-        <VideoGrid items={allItems} />
+      {loading ? <HomeSkeleton /> : (
+        <div className="animate-fade-in">
+          {allItems.length === 0 ? (
+            <EmptyState title="还没有视频" body="去设置里添加一个本机或 NAS 挂载目录，然后扫描媒体库。" />
+          ) : (
+            <VideoGrid items={allItems} />
+          )}
+        </div>
       )}
 
       <div ref={loadMoreMarker} className="flex min-h-28 items-center justify-center py-8 text-sm text-white/38" aria-live="polite">
@@ -132,5 +136,5 @@ export default function HomePage() {
 }
 
 function HomeSkeleton() {
-  return <div className="grid animate-pulse grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">{Array.from({ length: 12 }, (_, index) => <div key={index}><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-2 h-4 rounded bg-white/5" /><div className="mt-2 h-3 w-1/2 rounded bg-white/[0.035]" /></div>)}</div>;
+  return <div className="grid skeleton-shimmer grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">{Array.from({ length: 12 }, (_, index) => <div key={index}><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-2 h-4 rounded bg-white/5" /><div className="mt-2 h-3 w-1/2 rounded bg-white/[0.035]" /></div>)}</div>;
 }

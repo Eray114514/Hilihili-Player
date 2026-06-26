@@ -1,9 +1,11 @@
 "use client";
 
 import { AlertTriangle, FastForward, LoaderCircle, Maximize, Minimize, Pause, Play, Rewind, Subtitles, Volume2, VolumeX } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiUrl, assetUrl, postJson } from "@/lib/api";
 import type { PartDetail } from "@/lib/api";
+import { fadeIn, slideDown } from "@/lib/motion";
 import { decodeSubtitle, findActiveCue, parseSubtitle, type SubtitleCue } from "@/lib/subtitles";
 
 type VideoPlayerProps = {
@@ -518,11 +520,22 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
           <AlertTriangle size={32} className="text-amber-400" />
           <span>{part.compatibilityStatus === "failed" ? "该视频转换失败，请检查 worker 日志或源文件是否损坏。" : "浏览器无法加载该视频，请重新扫描媒体库后再试。"}</span>
         </div>
-      ) : buffering && !holdingFast ? (
-        <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-          <LoaderCircle className="animate-spin text-white/80" size={42} />
-        </div>
-      ) : null}
+      ) : (
+        <AnimatePresence>
+          {buffering && !holdingFast ? (
+            <motion.div
+              key="buffering-spinner"
+              variants={fadeIn}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+            >
+              <LoaderCircle className="animate-spin text-white/80" size={42} />
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+      )}
       {holdingFast ? <div className="pointer-events-none absolute left-1/2 top-5 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-sm font-semibold">3× 快进中</div> : null}
       {autoPlayBlocked || (!playing && !buffering) ? (
         <button className="absolute left-1/2 top-1/2 grid h-16 w-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-white/92 text-black shadow-xl transition hover:scale-105" onClick={togglePlay} aria-label="播放">
@@ -592,7 +605,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
                   backgroundSize: `${spriteInfo.thumbW * spriteInfo.cols}px ${spriteInfo.thumbH * spriteInfo.rows}px`
                 }}
               >
-                {spriteLoaded ? null : <div className="absolute inset-0 animate-pulse bg-white/10" />}
+                {spriteLoaded ? null : <div className="absolute inset-0 skeleton-shimmer bg-white/10" />}
               </div>
               <div className="bg-black/80 px-2 py-1 text-center text-xs font-medium tabular-nums text-white/90">
                 {formatTime(hoverTime)}
@@ -650,10 +663,17 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
                 >
                   <Subtitles size={18} />
                 </button>
-                {subtitleMenuOpen ? (
-                  <>
-                    <div className="fixed inset-0 z-10" onClick={() => setSubtitleMenuOpen(false)} />
-                    <div className="absolute bottom-full right-0 z-20 mb-1 w-40 overflow-hidden rounded-lg border border-white/10 bg-[#1a1c22] py-1 shadow-xl">
+                {subtitleMenuOpen ? <div className="fixed inset-0 z-10" onClick={() => setSubtitleMenuOpen(false)} /> : null}
+                <AnimatePresence>
+                  {subtitleMenuOpen ? (
+                    <motion.div
+                      key="subtitle-menu"
+                      variants={slideDown}
+                      initial="hidden"
+                      animate="visible"
+                      exit="exit"
+                      className="absolute bottom-full right-0 z-20 mb-1 w-40 overflow-hidden rounded-lg border border-white/10 bg-[#1a1c22] py-1 shadow-xl"
+                    >
                       <button
                         className="flex w-full items-center justify-between px-3 py-1.5 text-sm text-white/70 hover:bg-white/8 hover:text-white"
                         onClick={() => { setSubtitlesEnabled((v) => !v); setSubtitleMenuOpen(false); showControls(); }}
@@ -687,9 +707,9 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
                       >
                         顶部显示
                       </button>
-                    </div>
-                  </>
-                ) : null}
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
               </div>
             ) : null}
 
@@ -702,10 +722,17 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
               >
                 {speed}×
               </button>
-              {speedMenuOpen ? (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setSpeedMenuOpen(false)} />
-                  <div className="absolute bottom-full right-0 z-20 mb-1 overflow-hidden rounded-lg border border-white/10 bg-[#1a1c22] py-1 shadow-xl">
+              {speedMenuOpen ? <div className="fixed inset-0 z-10" onClick={() => setSpeedMenuOpen(false)} /> : null}
+              <AnimatePresence>
+                {speedMenuOpen ? (
+                  <motion.div
+                    key="speed-menu"
+                    variants={slideDown}
+                    initial="hidden"
+                    animate="visible"
+                    exit="exit"
+                    className="absolute bottom-full right-0 z-20 mb-1 overflow-hidden rounded-lg border border-white/10 bg-[#1a1c22] py-1 shadow-xl"
+                  >
                     {SPEEDS.map((value) => (
                       <button
                         key={value}
@@ -715,9 +742,9 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
                         {value}×
                       </button>
                     ))}
-                  </div>
-                </>
-              ) : null}
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
             </div>
 
             <button className="player-btn" onClick={toggleFullscreen} aria-label={isFullscreen ? "退出全屏 (F)" : "全屏 (F)"}>

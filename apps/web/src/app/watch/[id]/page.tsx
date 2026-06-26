@@ -4,11 +4,13 @@ import { Ban, Check, CircleDollarSign, MoreHorizontal, Plus, Send, Star, ThumbsD
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { AppShell } from "@/components/AppShell";
 import { CompactVideoCard } from "@/components/VideoCard";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { CreatorAvatar } from "@/components/CreatorAvatar";
 import { deleteJson, getJson, postJson, putJson, type FavoriteFolder, type ItemDetail } from "@/lib/api";
+import { fadeIn, pop, scaleIn, slideDown } from "@/lib/motion";
 import type { Reaction } from "@hilihili/shared";
 
 export default function WatchPage() {
@@ -171,7 +173,7 @@ export default function WatchPage() {
   return (
     <AppShell wide>
       {!detail ? <WatchSkeleton /> : (
-        <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <motion.div variants={fadeIn} initial="hidden" animate="visible" className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
           <main className="min-w-0">
             <VideoPlayer
               itemId={detail.item.id}
@@ -187,13 +189,13 @@ export default function WatchPage() {
                 <Link href={detail.item.creator_id ? `/creator/${detail.item.creator_id}` : "#"} className="flex shrink-0 items-center gap-2.5 rounded-xl border border-white/8 bg-white/[0.03] p-2 pr-3 transition hover:border-[rgba(94,234,212,.28)] hover:bg-white/[0.055]"><CreatorAvatar creatorId={null} name={detail.item.creatorName} avatarUrl={detail.item.creatorAvatarUrl} size="sm" /><span className="min-w-0"><span className="block max-w-44 truncate text-sm font-semibold text-white/88">{detail.item.creatorName}</span>{detail.item.creatorAlias ? <span className="block max-w-44 truncate text-xs text-white/42">{detail.item.creatorAlias}</span> : <span className="block text-xs text-white/38">UP 主</span>}</span></Link>
               </div>
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                <button className={`action-button bili-action ${reaction === "like" ? "active" : ""}`} onClick={() => void toggleReaction("like")}><ThumbsUp size={19} fill={reaction === "like" ? "currentColor" : "none"} /> 喜欢</button>
-                <button className={`action-button ${reaction === "dislike" ? "active" : ""}`} onClick={() => void toggleReaction("dislike")}><ThumbsDown size={18} fill={reaction === "dislike" ? "currentColor" : "none"} /> 不喜欢</button>
-                <button className={`action-button bili-action ${coined ? "active" : ""}`} onClick={() => void toggleCoin()}><CircleDollarSign size={19} fill={coined ? "currentColor" : "none"} /> 投币</button>
+                <button className={`action-button bili-action ${reaction === "like" ? "active" : ""}`} onClick={() => void toggleReaction("like")}><motion.span className="inline-flex" variants={pop} initial={false} animate={reaction === "like" ? "pop" : "rest"}><ThumbsUp size={19} fill={reaction === "like" ? "currentColor" : "none"} /></motion.span> 喜欢</button>
+                <button className={`action-button ${reaction === "dislike" ? "active" : ""}`} onClick={() => void toggleReaction("dislike")}><motion.span className="inline-flex" variants={pop} initial={false} animate={reaction === "dislike" ? "pop" : "rest"}><ThumbsDown size={18} fill={reaction === "dislike" ? "currentColor" : "none"} /></motion.span> 不喜欢</button>
+                <button className={`action-button bili-action ${coined ? "active" : ""}`} onClick={() => void toggleCoin()}><motion.span className="inline-flex" variants={pop} initial={false} animate={coined ? "pop" : "rest"}><CircleDollarSign size={19} fill="none" strokeWidth={coined ? 2.5 : 2} /></motion.span> 投币</button>
                 <div className="relative">
-                  <button className={`action-button bili-action ${favoritedFolderIds.length > 0 ? "active" : ""}`} onClick={() => setFavoritePanelOpen((open) => !open)} aria-expanded={favoritePanelOpen} aria-label="收藏"><Star size={19} fill={favoritedFolderIds.length > 0 ? "currentColor" : "none"} /> 收藏</button>
-                  {favoritePanelOpen ? (
-                    <div className="absolute right-0 top-11 z-20 w-72 rounded-lg border border-white/10 bg-[#1a1c22] p-2 shadow-2xl">
+                  <button className={`action-button bili-action ${favoritedFolderIds.length > 0 ? "active" : ""}`} onClick={() => setFavoritePanelOpen((open) => !open)} aria-expanded={favoritePanelOpen} aria-label="收藏"><motion.span className="inline-flex" variants={pop} initial={false} animate={favoritedFolderIds.length > 0 ? "pop" : "rest"}><Star size={19} fill={favoritedFolderIds.length > 0 ? "currentColor" : "none"} /></motion.span> 收藏</button>
+                  <AnimatePresence>{favoritePanelOpen ? (
+                    <motion.div variants={slideDown} initial="hidden" animate="visible" exit="exit" className="absolute right-0 top-11 z-20 w-72 rounded-lg border border-white/10 bg-[#1a1c22] p-2 shadow-2xl">
                       <div className="max-h-64 space-y-1 overflow-y-auto">
                         {folders.length === 0 ? (
                           <p className="px-3 py-3 text-sm text-white/40">还没有收藏夹</p>
@@ -214,8 +216,8 @@ export default function WatchPage() {
                         <input value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} className="field min-w-0 flex-1 text-sm" placeholder="新建收藏夹…" maxLength={50} />
                         <button type="submit" className="secondary-button shrink-0 !px-2.5 !py-1.5"><Plus size={15} />新建</button>
                       </form>
-                    </div>
-                  ) : null}
+                    </motion.div>
+                  ) : null}</AnimatePresence>
                 </div>
                 <details className="relative ml-auto">
                   <summary className="icon-button cursor-pointer list-none" aria-label="更多操作"><MoreHorizontal size={19} /></summary>
@@ -226,14 +228,16 @@ export default function WatchPage() {
               </div>
               {description ? <div className="mt-5 rounded-2xl border border-white/7 bg-white/[0.025] px-4 py-3.5"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-semibold text-white/82">简介</h2>{description.length > 110 ? <button type="button" className="text-sm text-[var(--accent)] hover:underline" onClick={() => setDescriptionExpanded((value) => !value)}>{descriptionExpanded ? "收起" : "展开"}</button> : null}</div><p className={`mt-2 whitespace-pre-wrap text-sm leading-7 text-white/62 ${descriptionExpanded ? "" : "line-clamp-3"}`}>{description}</p>{descriptionExpanded && detail.item.kind === "post" ? <Link href={`/dynamic/${detail.item.id}`} className="mt-3 inline-flex text-sm text-[var(--accent)] hover:underline">查看原动态</Link> : null}</div> : null}
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                {tagDetails.map((tag) => (
-                  <span key={tag.id} className={`inline-flex min-h-8 items-center gap-1 rounded-full border py-1 pl-2.5 pr-1.5 text-xs transition ${tag.source === "content" ? "border-[rgba(94,234,212,.35)] bg-[rgba(94,234,212,.1)] text-[var(--accent)]" : "border-white/8 bg-white/[.045] text-white/50"}`}>
-                    <span>{tag.name}</span>
-                    <button disabled={tagBusy === tag.id} className="grid h-4 w-4 shrink-0 place-items-center rounded-full text-current/60 transition hover:bg-white/10 hover:text-white disabled:opacity-30" onClick={() => void removeTag(tag.id)} aria-label={`删除标签 ${tag.name}`}>
-                      <X size={12} />
-                    </button>
-                  </span>
-                ))}
+                <AnimatePresence initial={false}>
+                  {tagDetails.map((tag) => (
+                    <motion.span key={tag.id} layout variants={scaleIn} initial="hidden" animate="visible" exit="exit" className={`inline-flex min-h-8 items-center gap-1 rounded-full border py-1 pl-2.5 pr-1.5 text-xs transition ${tag.source === "content" ? "border-[rgba(94,234,212,.35)] bg-[rgba(94,234,212,.1)] text-[var(--accent)]" : "border-white/8 bg-white/[.045] text-white/50"}`}>
+                      <span>{tag.name}</span>
+                      <button disabled={tagBusy === tag.id} className="grid h-4 w-4 shrink-0 place-items-center rounded-full text-current/60 transition hover:bg-white/10 hover:text-white disabled:opacity-30" onClick={() => void removeTag(tag.id)} aria-label={`删除标签 ${tag.name}`}>
+                        <X size={12} />
+                      </button>
+                    </motion.span>
+                  ))}
+                </AnimatePresence>
                 <form className="inline-flex min-h-8 items-center gap-1.5 rounded-full border border-white/8 bg-white/[.035] px-2" onSubmit={addTag}>
                   <input value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} className="w-24 bg-transparent text-xs text-white/76 outline-none placeholder:text-white/32" placeholder="添加标签" maxLength={40} />
                   <button disabled={tagBusy === "add"} className="grid h-5 w-5 place-items-center rounded-full text-[var(--accent)] transition hover:bg-white/10 disabled:opacity-35" aria-label="添加标签">
@@ -268,14 +272,14 @@ export default function WatchPage() {
               )) : detail.related.map((item) => <CompactVideoCard key={item.id} item={item} />)}
             </div>
           </aside>
-        </div>
+        </motion.div>
       )}
     </AppShell>
   );
 }
 
 function WatchSkeleton() {
-  return <div className="grid animate-pulse gap-6 lg:grid-cols-[minmax(0,1fr)_360px]"><div><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-5 h-7 w-2/3 rounded bg-white/5" /></div><div className="h-[60vh] rounded-xl bg-white/5" /></div>;
+  return <div className="grid skeleton-shimmer gap-6 lg:grid-cols-[minmax(0,1fr)_360px]"><div><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-5 h-7 w-2/3 rounded bg-white/5" /></div><div className="h-[60vh] rounded-xl bg-white/5" /></div>;
 }
 
 function formatDate(value: string | null) {
