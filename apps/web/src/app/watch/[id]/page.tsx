@@ -1,12 +1,13 @@
 "use client";
 
-import { Ban, BookOpen, Check, CircleDollarSign, ExternalLink, MoreHorizontal, Plus, Send, Star, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { Ban, Check, CircleDollarSign, MoreHorizontal, Plus, Send, Star, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { CompactVideoCard } from "@/components/VideoCard";
 import { VideoPlayer } from "@/components/VideoPlayer";
+import { CreatorAvatar } from "@/components/CreatorAvatar";
 import { deleteJson, getJson, postJson, putJson, type FavoriteFolder, type ItemDetail } from "@/lib/api";
 import type { Reaction } from "@hilihili/shared";
 
@@ -26,6 +27,7 @@ export default function WatchPage() {
   const [favoriteBusyId, setFavoriteBusyId] = useState<string | null>(null);
   const [tagDraft, setTagDraft] = useState("");
   const [tagBusy, setTagBusy] = useState<string | null>(null);
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
 
   useEffect(() => {
     let ignore = false;
@@ -36,6 +38,7 @@ export default function WatchPage() {
       setBlacklisted(Boolean(response.item.creatorBlacklisted));
       setCoined(Boolean(response.item.coined));
       setFavoritedFolderIds(response.favoritedFolderIds);
+      setDescriptionExpanded(false);
       const resumeIndex = response.parts.findIndex((part) => part.id === response.item.resumePartId);
       setActivePartIndex(resumeIndex >= 0 ? resumeIndex : 0);
       if (response.parts.length > 1) setSideTab("parts");
@@ -163,6 +166,7 @@ export default function WatchPage() {
 
   const activePart = detail?.parts[activePartIndex];
   const tagDetails = detail?.tagDetails ?? [];
+  const description = detail?.item.post_body ?? detail?.item.description ?? null;
 
   return (
     <AppShell wide>
@@ -178,8 +182,10 @@ export default function WatchPage() {
             />
 
             <section className="border-b border-white/8 py-5">
-              <h1 className="text-xl font-semibold leading-8 md:text-2xl">{detail.item.title}</h1>
-              <p className="mt-1 text-sm text-white/45">{detail.item.creatorName}{detail.item.creatorAlias ? ` · ${detail.item.creatorAlias}` : ""} · {detail.item.categoryName}</p>
+              <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+                <div className="min-w-0"><h1 className="text-xl font-semibold leading-8 md:text-2xl">{detail.item.title}</h1><div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-white/42"><Link href={detail.item.category_id ? `/category/${detail.item.category_id}` : "#"} className="hover:text-[var(--accent)]">{detail.item.categoryName}</Link><span>·</span><time>{formatDate(detail.item.content_published_at ?? detail.item.file_modified_at ?? detail.item.first_seen_at)}</time>{detail.parts.length > 1 ? <><span>·</span><span>{detail.parts.length} P</span></> : null}</div></div>
+                <Link href={detail.item.creator_id ? `/creator/${detail.item.creator_id}` : "#"} className="flex shrink-0 items-center gap-2.5 rounded-xl border border-white/8 bg-white/[0.03] p-2 pr-3 transition hover:border-[rgba(94,234,212,.28)] hover:bg-white/[0.055]"><CreatorAvatar creatorId={null} name={detail.item.creatorName} avatarUrl={detail.item.creatorAvatarUrl} size="sm" /><span className="min-w-0"><span className="block max-w-44 truncate text-sm font-semibold text-white/88">{detail.item.creatorName}</span>{detail.item.creatorAlias ? <span className="block max-w-44 truncate text-xs text-white/42">{detail.item.creatorAlias}</span> : <span className="block text-xs text-white/38">UP 主</span>}</span></Link>
+              </div>
               <div className="mt-4 flex flex-wrap items-center gap-2">
                 <button className={`action-button bili-action ${reaction === "like" ? "active" : ""}`} onClick={() => void toggleReaction("like")}><ThumbsUp size={19} fill={reaction === "like" ? "currentColor" : "none"} /> 喜欢</button>
                 <button className={`action-button ${reaction === "dislike" ? "active" : ""}`} onClick={() => void toggleReaction("dislike")}><ThumbsDown size={18} fill={reaction === "dislike" ? "currentColor" : "none"} /> 不喜欢</button>
@@ -218,6 +224,7 @@ export default function WatchPage() {
                   </div>
                 </details>
               </div>
+              {description ? <div className="mt-5 rounded-2xl border border-white/7 bg-white/[0.025] px-4 py-3.5"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-semibold text-white/82">简介</h2>{description.length > 110 ? <button type="button" className="text-sm text-[var(--accent)] hover:underline" onClick={() => setDescriptionExpanded((value) => !value)}>{descriptionExpanded ? "收起" : "展开"}</button> : null}</div><p className={`mt-2 whitespace-pre-wrap text-sm leading-7 text-white/62 ${descriptionExpanded ? "" : "line-clamp-3"}`}>{description}</p>{descriptionExpanded && detail.item.kind === "post" ? <Link href={`/dynamic/${detail.item.id}`} className="mt-3 inline-flex text-sm text-[var(--accent)] hover:underline">查看原动态</Link> : null}</div> : null}
               <div className="mt-4 flex flex-wrap items-center gap-2">
                 {tagDetails.map((tag) => (
                   <span key={tag.id} className={`inline-flex min-h-8 items-center gap-1 rounded-full border py-1 pl-2.5 pr-1.5 text-xs transition ${tag.source === "manual" ? "border-[rgba(94,234,212,.35)] bg-[rgba(94,234,212,.1)] text-[var(--accent)]" : "border-white/8 bg-white/[.045] text-white/50"}`}>
@@ -235,16 +242,6 @@ export default function WatchPage() {
                 </form>
               </div>
             </section>
-
-            {detail.item.kind === "post" ? (
-              <section className="mt-6 rounded-xl border border-[rgba(94,234,212,.14)] bg-[rgba(94,234,212,.045)] p-4 md:p-5">
-                <div className="flex items-center justify-between gap-3">
-                  <h2 className="flex items-center gap-2 font-semibold"><BookOpen size={18} className="text-[var(--accent)]" /> 简介</h2>
-                  <Link href={`/dynamic/${detail.item.id}`} className="inline-flex items-center gap-1.5 text-sm text-[var(--accent)] hover:underline">查看原动态 <ExternalLink size={14} /></Link>
-                </div>
-                {detail.item.post_body ? <p className="mt-3 line-clamp-6 whitespace-pre-wrap text-sm leading-7 text-white/68">{detail.item.post_body}</p> : <p className="mt-3 text-sm text-white/40">原动态没有正文，可前往动态页查看配图。</p>}
-              </section>
-            ) : null}
 
             <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-4 md:p-5">
               <h2 className="font-semibold">评论和笔记</h2>
@@ -279,4 +276,9 @@ export default function WatchPage() {
 
 function WatchSkeleton() {
   return <div className="grid animate-pulse gap-6 lg:grid-cols-[minmax(0,1fr)_360px]"><div><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-5 h-7 w-2/3 rounded bg-white/5" /></div><div className="h-[60vh] rounded-xl bg-white/5" /></div>;
+}
+
+function formatDate(value: string | null) {
+  const date = value ? new Date(value) : null;
+  return date && Number.isFinite(date.getTime()) ? date.toLocaleString("zh-CN", { year: "numeric", month: "long", day: "numeric" }) : "日期未知";
 }

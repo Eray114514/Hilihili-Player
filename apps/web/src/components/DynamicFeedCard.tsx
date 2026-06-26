@@ -16,7 +16,7 @@ export function DynamicFeedCard({ item }: { item: FeedItem }) {
   return (
     <article className="rounded-2xl border border-white/8 bg-[#12151c] p-4 shadow-[0_18px_50px_rgba(0,0,0,.12)] md:p-5">
       <header className="flex gap-3">
-        <CreatorAvatar creatorId={item.creatorId} name={item.creatorName} />
+        <CreatorAvatar creatorId={item.creatorId} name={item.creatorName} avatarUrl={item.creatorAvatarUrl} />
         <div className="min-w-0 flex-1">
           {item.creatorId ? <Link href={`/creator/${item.creatorId}`} className="font-semibold text-white hover:text-[var(--accent)]">{creatorLabel}</Link> : <span className="font-semibold">{creatorLabel}</span>}
           <p className="mt-0.5 text-xs text-white/38"><time>{formatDate(item.displayDate)}</time><span className="mx-1.5">·</span>{item.categoryName}</p>

@@ -27,11 +27,17 @@ export const creators = sqliteTable(
     id: text("id").primaryKey(),
     name: text("name").notNull(),
     alias: text("alias"),
+    description: text("description"),
+    avatarPath: text("avatar_path"),
+    bannerPath: text("banner_path"),
+    libraryId: text("library_id").references(() => libraries.id),
     categoryId: text("category_id").references(() => categories.id),
-    createdAt: text("created_at").notNull()
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at")
   },
   (table) => ({
-    byName: uniqueIndex("creators_category_name_idx").on(table.categoryId, table.name)
+    byName: uniqueIndex("creators_category_name_idx").on(table.categoryId, table.name),
+    byLibraryName: uniqueIndex("creators_library_name_idx").on(table.libraryId, table.name)
   })
 );
 
@@ -42,6 +48,7 @@ export const mediaItems = sqliteTable(
     kind: text("kind", { enum: ["video", "image", "post"] }).notNull(),
     title: text("title").notNull(),
     postBody: text("post_body"),
+    description: text("description"),
     libraryId: text("library_id").notNull().references(() => libraries.id),
     categoryId: text("category_id").references(() => categories.id),
     creatorId: text("creator_id").references(() => creators.id),
@@ -213,8 +220,26 @@ export const itemPreferences = sqliteTable("item_preferences", {
 export const creatorPreferences = sqliteTable("creator_preferences", {
   creatorId: text("creator_id").primaryKey().references(() => creators.id),
   blacklisted: integer("blacklisted", { mode: "boolean" }).notNull().default(false),
+  followed: integer("followed", { mode: "boolean" }).notNull().default(false),
+  followedAt: text("followed_at"),
   updatedAt: text("updated_at").notNull()
 });
+
+export const creatorMessages = sqliteTable(
+  "creator_messages",
+  {
+    id: text("id").primaryKey(),
+    creatorId: text("creator_id").notNull().references(() => creators.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull().references(() => mediaItems.id, { onDelete: "cascade" }),
+    createdAt: text("created_at").notNull(),
+    readAt: text("read_at")
+  },
+  (table) => ({
+    byCreator: index("creator_messages_creator_idx").on(table.creatorId),
+    byCreated: index("creator_messages_created_idx").on(table.createdAt),
+    byItem: uniqueIndex("creator_messages_item_idx").on(table.itemId)
+  })
+);
 
 export const favoriteFolders = sqliteTable("favorite_folders", {
   id: text("id").primaryKey(),

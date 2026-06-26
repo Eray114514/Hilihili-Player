@@ -34,7 +34,7 @@ export default function DynamicDetailPage() {
         {failed ? <div className="rounded-2xl border border-white/8 bg-white/[0.025] p-10 text-center text-white/55">这条动态不存在，或媒体库尚未完成扫描。</div> : !detail ? <DetailSkeleton /> : (
           <article className="overflow-hidden rounded-2xl border border-white/8 bg-[#12151c] shadow-2xl shadow-black/15">
             <header className="flex gap-3 border-b border-white/7 p-5 md:p-7">
-              <CreatorAvatar creatorId={detail.item.creator_id} name={detail.item.creatorName} size="lg" />
+              <CreatorAvatar creatorId={detail.item.creator_id} name={detail.item.creatorName} avatarUrl={detail.item.creatorAvatarUrl} size="lg" />
               <div className="min-w-0">
                 <Link href={detail.item.creator_id ? `/creator/${detail.item.creator_id}` : "#"} className="text-lg font-semibold hover:text-[var(--accent)]">{detail.item.creatorName}</Link>
                 {detail.item.creatorAlias ? <p className="mt-0.5 text-sm text-white/42">{detail.item.creatorAlias}</p> : null}
@@ -44,7 +44,7 @@ export default function DynamicDetailPage() {
 
             <div className="p-5 md:p-7">
               <h1 className="text-xl font-semibold leading-8 md:text-2xl">{detail.item.title}</h1>
-              {detail.item.post_body ? <p className="mt-4 whitespace-pre-wrap text-[15px] leading-7 text-white/76">{detail.item.post_body}</p> : detail.item.kind === "post" ? <p className="mt-4 rounded-xl bg-white/[0.035] p-4 text-sm text-white/40">这条动态没有可显示的正文。</p> : null}
+              {detail.item.post_body || detail.item.description ? <p className="mt-4 whitespace-pre-wrap text-[15px] leading-7 text-white/76">{detail.item.post_body ?? detail.item.description}</p> : detail.item.kind === "post" ? <p className="mt-4 rounded-xl bg-white/[0.035] p-4 text-sm text-white/40">这条动态没有可显示的正文。</p> : null}
 
               {detail.images.length > 0 ? <section className="mt-6" aria-label="动态图片"><ImageMosaic images={detail.images} total={detail.images.length} onSelect={setLightboxIndex} /></section> : detail.item.kind === "image" ? <div className="mt-6 grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 text-white/32"><span className="flex items-center gap-2"><ImageIcon /> 图片暂时无法读取</span></div> : null}
 

@@ -6,6 +6,7 @@ type CandidateRow = {
   kind: MediaKind;
   title: string;
   post_body: string | null;
+  description: string | null;
   creator_id: string | null;
   category_id: string | null;
   first_seen_at: string;
@@ -17,6 +18,7 @@ type CandidateRow = {
   category_name: string | null;
   creator_name: string | null;
   creator_alias: string | null;
+  creator_avatar_path: string | null;
   part_count: number;
   preview_part_id: string | null;
   finished: number | null;
@@ -76,10 +78,10 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
 
   const rows = db.prepare(`
     SELECT
-      mi.id, mi.kind, mi.title, mi.post_body, mi.creator_id, mi.category_id, mi.first_seen_at,
+      mi.id, mi.kind, mi.title, mi.post_body, mi.description, mi.creator_id, mi.category_id, mi.first_seen_at,
       mi.content_published_at, mi.file_modified_at, mi.cover_path, mi.generated_cover_path, mi.thumbnail_status,
       c.name AS category_name,
-      cr.name AS creator_name, cr.alias AS creator_alias,
+      cr.name AS creator_name, cr.alias AS creator_alias, cr.avatar_path AS creator_avatar_path,
       COALESCE(pc.part_count, 0) AS part_count,
       (SELECT mp.id FROM media_parts mp WHERE mp.item_id = mi.id ORDER BY mp.part_index ASC LIMIT 1) AS preview_part_id,
       wp.finished,
@@ -264,11 +266,12 @@ function toFeedItem(db: ReturnType<typeof getSqlite>, row: CandidateRow, score: 
     creatorId: row.creator_id,
     creatorName: row.creator_name ?? "未知UP",
     creatorAlias: row.creator_alias,
+    creatorAvatarUrl: row.creator_id && row.creator_avatar_path ? `/media/creators/${row.creator_id}/avatar` : null,
     coverUrl: row.cover_path || row.generated_cover_path ? `/media/items/${row.id}/cover` : null,
     thumbnailStatus: row.thumbnail_status,
     firstSeenAt: row.first_seen_at,
     displayDate: row.content_published_at ?? row.file_modified_at ?? row.first_seen_at,
-    postExcerpt: row.post_body ? excerpt(row.post_body) : null,
+    postExcerpt: row.post_body ? excerpt(row.post_body) : row.description ? excerpt(row.description) : null,
     playable: row.part_count > 0,
     previewPartId: row.preview_part_id,
     imageCount,

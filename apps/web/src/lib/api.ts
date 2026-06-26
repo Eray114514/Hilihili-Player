@@ -100,7 +100,19 @@ export type ActivityResponse = {
   stats: { history: number; completed: number; likes: number; coins: number };
 };
 export type Category = { id: string; name: string; itemCount: number };
-export type Creator = { id: string; name: string; alias: string | null; categoryName: string; itemCount: number };
+export type Creator = { id: string; name: string; alias: string | null; description: string | null; categoryName: string; itemCount: number };
+export type CreatorDetail = {
+  creator: { id: string; name: string; alias: string | null; description: string | null; avatarUrl: string | null; bannerUrl: string | null; followed: number; blacklisted: number };
+  stats: { itemCount: number; videoCount: number; postCount: number; imageCount: number };
+  categories: Category[];
+};
+export type CreatorItemsResponse = { items: FeedItem[]; total: number; hasMore: boolean };
+export type MessageResponse = {
+  messages: { id: string; itemId: string; creatorId: string; createdAt: string; readAt: string | null; item: FeedItem }[];
+  total: number;
+  unreadCount: number;
+  hasMore: boolean;
+};
 
 export type ItemImage = {
   id: string;
@@ -142,9 +154,11 @@ export type ItemDetail = {
     kind: "video" | "image" | "post";
     title: string;
     post_body: string | null;
+    description: string | null;
     categoryName: string;
     creatorName: string;
     creatorAlias: string | null;
+    creatorAvatarUrl: string | null;
     category_id: string | null;
     creator_id: string | null;
     first_seen_at: string;

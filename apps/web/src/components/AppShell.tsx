@@ -1,13 +1,15 @@
 "use client";
 
-import { Bookmark, CheckCircle2, ChevronRight, Clapperboard, Coins, Heart, History, Home, Library, Play, Radio, Search, Settings } from "lucide-react";
+import { Bell, Bookmark, CheckCircle2, ChevronRight, Clapperboard, Coins, Heart, History, Home, Library, Play, Radio, Search, Settings } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Suspense, type ReactNode } from "react";
+import { Suspense, type ReactNode, useEffect, useState } from "react";
+import { getJson } from "@/lib/api";
 
 const navItems = [
   { href: "/", label: "首页", icon: Home },
   { href: "/dynamic", label: "动态", icon: Radio },
+  { href: "/messages", label: "消息", icon: Bell },
   { href: "/settings", label: "媒体库", icon: Settings }
 ];
 
@@ -22,7 +24,7 @@ export function AppShell({ children, wide = false }: { children: ReactNode; wide
             <span>Hilihili</span>
           </Link>
           <nav className="hidden items-center gap-1 md:flex">
-            {navItems.map((item) => {
+            {navItems.filter((item) => item.href !== "/messages").map((item) => {
               const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
               return <Link key={item.href} href={item.href} className={`nav-link ${active ? "active" : ""}`}>{item.label}</Link>;
             })}
@@ -30,13 +32,14 @@ export function AppShell({ children, wide = false }: { children: ReactNode; wide
           <div className="order-3 w-full md:order-none md:ml-auto md:max-w-xl">
             <Suspense fallback={<HeaderSearchFallback />}><HeaderSearch /></Suspense>
           </div>
+          <MessageButton />
           <div className="ml-auto md:ml-0"><ProfileMenu /></div>
         </div>
       </header>
 
       <main className={`mx-auto min-h-[calc(100vh-4.25rem)] px-4 pb-24 pt-6 md:px-6 md:pb-12 ${wide ? "max-w-[1760px]" : "max-w-[1600px]"}`}>{children}</main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-3 border-t border-white/8 bg-[#0d0f14]/96 px-4 py-2 backdrop-blur md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-white/8 bg-[#0d0f14]/96 px-4 py-2 backdrop-blur md:hidden">
         {navItems.map((item) => {
           const Icon = item.icon;
           const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
@@ -69,6 +72,19 @@ function HeaderSearchFallback() {
   return <div className="h-10 w-full animate-pulse rounded-xl bg-white/[0.055]" />;
 }
 
+function MessageButton() {
+  const [unread, setUnread] = useState(0);
+  useEffect(() => {
+    let disposed = false;
+    const refresh = () => { void getJson<{ unreadCount: number }>("/me/messages/unread-count").then((data) => { if (!disposed) setUnread(data.unreadCount); }).catch(() => {}); };
+    refresh();
+    const interval = window.setInterval(refresh, 30000);
+    window.addEventListener("focus", refresh);
+    return () => { disposed = true; window.clearInterval(interval); window.removeEventListener("focus", refresh); };
+  }, []);
+  return <Link href="/messages" className="relative grid h-10 w-10 place-items-center rounded-xl text-white/55 transition hover:bg-white/7 hover:text-white" aria-label={unread > 0 ? `视频消息，${unread} 条未读` : "视频消息"}><Bell size={19} />{unread > 0 ? <span className="absolute -right-1 -top-1 grid min-w-5 place-items-center rounded-full bg-[var(--accent)] px-1 text-[10px] font-bold leading-5 text-black">{unread > 99 ? "99+" : unread}</span> : null}</Link>;
+}
+
 function ProfileMenu() {
   const menuItems = [
     { href: "/history", label: "继续观看", icon: Play },
@@ -77,6 +93,7 @@ function ProfileMenu() {
     { href: "/history?tab=likes", label: "最近点赞", icon: Heart },
     { href: "/history?tab=coins", label: "最近投币", icon: Coins },
     { href: "/favorites", label: "我的收藏", icon: Bookmark },
+    { href: "/messages", label: "视频消息", icon: Bell },
     { href: "/settings", label: "设置与媒体库", icon: Settings }
   ];
   return (

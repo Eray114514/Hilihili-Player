@@ -121,3 +121,60 @@ test("scanner replaces legacy child parts when grouping a folder", async () => {
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_parts WHERE path = ?").get(videoPath) as { count: number }).count, 1);
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_subtitles WHERE path = ?").get(join(folder, "P1.zh.srt")) as { count: number }).count, 1);
 });
+
+test("scanner recognizes transport streams and removes empty legacy categories", async () => {
+  const root = join(sandbox, "transport-stream-library");
+  const videoPath = join(root, "_待归类", "散列目录", "P1.ts");
+  mkdirSync(join(root, "_待归类", "散列目录"), { recursive: true });
+  writeFileSync(videoPath, "transport-stream-video");
+
+  const db = getSqlite();
+  const libraryId = createId("lib");
+  const staleCategoryId = createId("cat");
+  const staleCreatorId = createId("up");
+  const now = nowIso();
+  db.prepare("INSERT INTO libraries (id, name, root_path, enabled, created_at) VALUES (?, ?, ?, 1, ?)").run(libraryId, "TS 测试库", root, now);
+  db.prepare("INSERT INTO categories (id, name, library_id, created_at) VALUES (?, ?, ?, ?)").run(staleCategoryId, "_待归类", libraryId, now);
+  db.prepare("INSERT INTO creators (id, name, category_id, created_at) VALUES (?, ?, ?, ?)").run(staleCreatorId, "未知UP", staleCategoryId, now);
+
+  assert.equal(await scanLibrary(libraryId), 1);
+  assert.deepEqual(
+    db.prepare("SELECT name FROM categories WHERE library_id = ? ORDER BY name").all(libraryId),
+    [{ name: "待归类" }]
+  );
+  assert.equal((db.prepare("SELECT path FROM media_parts WHERE path = ?").get(videoPath) as { path: string }).path, videoPath);
+});
+
+test("scanner aggregates creator profiles and emits one message for a followed UP's new video", async () => {
+  const root = join(sandbox, "creator-profile-library");
+  const techCreator = join(root, "科技", "聚合UP");
+  const lifeCreator = join(root, "生活", "聚合UP");
+  mkdirSync(techCreator, { recursive: true });
+  mkdirSync(lifeCreator, { recursive: true });
+  writeFileSync(join(techCreator, "avatar.jpg"), "avatar");
+  writeFileSync(join(techCreator, "banner.jpg"), "banner");
+  writeFileSync(join(techCreator, "info.json"), JSON.stringify({ alias: "Aggregator", description: "UP 简介", avatar: "avatar.jpg", banner: "banner.jpg" }));
+  writeFileSync(join(techCreator, "聚合UP_科技.mp4"), "video-one");
+  writeFileSync(join(techCreator, "聚合UP_科技.info.json"), JSON.stringify({ description: "视频简介" }));
+  writeFileSync(join(lifeCreator, "聚合UP_生活.mp4"), "video-two");
+
+  const db = getSqlite();
+  const libraryId = createId("lib");
+  db.prepare("INSERT INTO libraries (id, name, root_path, enabled, created_at) VALUES (?, ?, ?, 1, ?)").run(libraryId, "UP 资料测试库", root, nowIso());
+  assert.equal(await scanLibrary(libraryId), 2);
+  const creator = db.prepare("SELECT id, alias, description, avatar_path AS avatarPath, banner_path AS bannerPath FROM creators WHERE library_id = ? AND name = ?").get(libraryId, "聚合UP") as { id: string; alias: string; description: string; avatarPath: string; bannerPath: string };
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM creators WHERE library_id = ? AND name = ?").get(libraryId, "聚合UP") as { count: number }).count, 1);
+  assert.equal(creator.alias, "Aggregator");
+  assert.equal(creator.description, "UP 简介");
+  assert.equal(creator.avatarPath, join(techCreator, "avatar.jpg"));
+  assert.equal(creator.bannerPath, join(techCreator, "banner.jpg"));
+  assert.equal((db.prepare("SELECT description FROM media_items WHERE title = ?").get("科技") as { description: string }).description, "视频简介");
+
+  const followedAt = nowIso();
+  db.prepare("INSERT INTO creator_preferences (creator_id, blacklisted, followed, followed_at, updated_at) VALUES (?, 0, 1, ?, ?)").run(creator.id, followedAt, followedAt);
+  writeFileSync(join(techCreator, "聚合UP_新视频.mp4"), "video-three");
+  assert.equal(await scanLibrary(libraryId), 3);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM creator_messages WHERE creator_id = ?").get(creator.id) as { count: number }).count, 1);
+  assert.equal(await scanLibrary(libraryId), 3);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM creator_messages WHERE creator_id = ?").get(creator.id) as { count: number }).count, 1, "repeated scans must not duplicate messages");
+});

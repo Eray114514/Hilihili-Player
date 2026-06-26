@@ -148,7 +148,7 @@ function ActivityCard({ entry, tab, busy, onRemove, onUnlike, onUncoin }: { entr
       </Link>
       <div className="min-w-0 flex-1">
         <Link href={href} className="line-clamp-2 font-medium leading-6 hover:text-[var(--accent)]">{entry.item.title}</Link>
-        <p className="mt-1 truncate text-xs text-white/42">{entry.item.creatorName} · {entry.item.categoryName}</p>
+        <p className="mt-1 truncate text-xs text-white/42">{entry.item.creatorId ? <Link href={`/creator/${entry.item.creatorId}`} className="hover:text-[var(--accent)]">{entry.item.creatorName}</Link> : entry.item.creatorName} · {entry.item.categoryName}</p>
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           <span className={entry.finished ? "text-[var(--accent)]" : "text-white/65"}>{status}</span>
           {entry.resumePartIndex ? <span className="text-white/38">P{entry.resumePartIndex}{entry.resumePartTitle ? ` · ${entry.resumePartTitle}` : ""}</span> : null}

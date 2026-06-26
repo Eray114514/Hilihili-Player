@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createId, getDataDir, getSqlite, nowIso, type SqliteDatabase } from "@hilihili/db";
 import { isImagePath, isVideoPath, type MediaKind, type StructureStatus } from "@hilihili/shared";
 import sharp from "sharp";
@@ -20,6 +20,7 @@ type MediaItemInput = {
   kind: MediaKind;
   title: string;
   postBody: string | null;
+  description: string | null;
   libraryId: string;
   categoryId: string;
   creatorId: string;
@@ -43,6 +44,9 @@ type InfoJson = {
   date?: string;
   published_at?: string;
   alias?: string;
+  description?: string;
+  avatar?: string;
+  banner?: string;
   p_titles?: Record<string, string>;
   hidden?: boolean;
 };
@@ -286,6 +290,7 @@ function scanLibraryContents(db: SqliteDatabase, library: LibraryRow) {
   const context: ScanContext = { seenItemIds: new Set() };
   const indexed = scanRoot(db, library, tagsIndex, context);
   pruneUnseenItems(db, library.id, context.seenItemIds);
+  pruneEmptyCategories(db, library.id);
   return indexed;
 }
 
@@ -317,7 +322,7 @@ function scanRoot(db: SqliteDatabase, library: LibraryRow, tagsIndex: TagsIndex,
 function scanRootLevelFiles(db: SqliteDatabase, library: LibraryRow, tagsIndex: TagsIndex, context: ScanContext) {
   let indexed = 0;
   const categoryId = getOrCreateCategory(db, library.id, "未归类");
-  const creatorId = getOrCreateCreator(db, categoryId, "未知UP");
+  const creatorId = getOrCreateCreator(db, library.id, categoryId, "未知UP");
 
   for (const entry of safeReadDir(library.root_path)) {
     const fullPath = join(library.root_path, entry);
@@ -354,7 +359,7 @@ function scanCategory(db: SqliteDatabase, library: LibraryRow, categoryName: str
     }
 
     if (isVideoPath(fullPath) || isImagePath(fullPath)) {
-      const creatorId = getOrCreateCreator(db, categoryId, "未知UP");
+      const creatorId = getOrCreateCreator(db, library.id, categoryId, "未知UP");
       indexed += indexSingleFile(db, library, categoryId, creatorId, categoryName, "未知UP", fullPath, tagsIndex, "fallback", context);
     }
   }
@@ -375,7 +380,8 @@ function scanCreator(
   let indexed = 0;
   const displayCreator = creatorName === "_无UP主" ? "未知UP" : creatorName;
   const creatorInfo = readInfoFile(join(creatorPath, "info.json"));
-  const creatorId = getOrCreateCreator(db, categoryId, displayCreator, creatorInfo.alias);
+  const creatorId = getOrCreateCreator(db, library.id, categoryId, displayCreator, creatorInfo, creatorPath);
+  const profileAssets = new Set([resolveCreatorAssetPath(creatorPath, creatorInfo.avatar), resolveCreatorAssetPath(creatorPath, creatorInfo.banner)].filter((path): path is string => path !== null));
 
   for (const entry of safeReadDir(creatorPath)) {
     const fullPath = join(creatorPath, entry);
@@ -383,6 +389,7 @@ function scanCreator(
     if (!stat) {
       continue;
     }
+    if (profileAssets.has(fullPath)) continue;
 
     if (stat.isDirectory()) {
       if (entry.startsWith("_")) {
@@ -432,7 +439,7 @@ function scanFallbackFiles(
 ) {
   let indexed = 0;
   const categoryId = getOrCreateCategory(db, library.id, categoryName);
-  const creatorId = getOrCreateCreator(db, categoryId, creatorName);
+  const creatorId = getOrCreateCreator(db, library.id, categoryId, creatorName);
 
   for (const entry of safeReadDir(startPath)) {
     const fullPath = join(startPath, entry);
@@ -497,6 +504,7 @@ function indexMultiPartVideo(
     kind: "video",
     title,
     postBody: null,
+    description: info.description?.trim() || null,
     libraryId: library.id,
     categoryId,
     creatorId,
@@ -539,6 +547,7 @@ function indexPost(
     kind: "post",
     title: info.title ?? cleanTitle(basename(folderPath)),
     postBody,
+    description: info.description?.trim() || null,
     libraryId: library.id,
     categoryId,
     creatorId,
@@ -576,6 +585,7 @@ function indexGallery(
     kind: "image",
     title: info.title ?? (basename(folderPath) === "图片" ? `${creatorName} 图片集` : cleanTitle(basename(folderPath))),
     postBody: null,
+    description: info.description?.trim() || null,
     libraryId: library.id,
     categoryId,
     creatorId,
@@ -617,6 +627,7 @@ function indexSingleFile(
     kind,
     title,
     postBody: null,
+    description: sidecarInfo.description?.trim() || null,
     libraryId: library.id,
     categoryId,
     creatorId,
@@ -657,7 +668,7 @@ function upsertMediaItem(db: SqliteDatabase, input: MediaItemInput, context: Sca
       : null;
     db.prepare(`
       UPDATE media_items
-      SET kind = ?, title = ?, post_body = ?, library_id = ?, category_id = ?, creator_id = ?, source_path = ?,
+      SET kind = ?, title = ?, post_body = ?, description = ?, library_id = ?, category_id = ?, creator_id = ?, source_path = ?,
           relative_path = ?, folder_path = ?, cover_path = ?, generated_cover_path = ?, content_published_at = ?, file_modified_at = ?,
           fingerprint = ?, thumbnail_status = ?, thumbnail_error = NULL, hidden = ?, structure_status = ?, updated_at = ?
       WHERE id = ?
@@ -665,6 +676,7 @@ function upsertMediaItem(db: SqliteDatabase, input: MediaItemInput, context: Sca
       input.kind,
       input.title,
       input.postBody,
+      input.description,
       input.libraryId,
       input.categoryId,
       input.creatorId,
@@ -690,10 +702,10 @@ function upsertMediaItem(db: SqliteDatabase, input: MediaItemInput, context: Sca
   db.prepare(`
     INSERT INTO media_items (
       id, kind, title, library_id, category_id, creator_id, source_path, relative_path,
-      folder_path, fingerprint, cover_path, generated_cover_path, thumbnail_status, content_published_at, post_body,
+      folder_path, fingerprint, cover_path, generated_cover_path, thumbnail_status, content_published_at, post_body, description,
       file_modified_at, hidden, structure_status, first_seen_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.kind,
@@ -709,12 +721,14 @@ function upsertMediaItem(db: SqliteDatabase, input: MediaItemInput, context: Sca
     input.coverPath || input.kind === "image" ? "ready" : "pending",
     input.contentPublishedAt,
     input.postBody,
+    input.description,
     input.fileModifiedAt,
     input.hidden ? 1 : 0,
     input.structureStatus,
     now,
     now
   );
+  createCreatorVideoMessage(db, input.creatorId, id, input.kind, now);
   context.seenItemIds.add(id);
   return id;
 }
@@ -730,16 +744,63 @@ function getOrCreateCategory(db: SqliteDatabase, libraryId: string, name: string
   return id;
 }
 
-function getOrCreateCreator(db: SqliteDatabase, categoryId: string, name: string, alias?: string) {
-  const existing = db.prepare("SELECT id FROM creators WHERE category_id = ? AND name = ?").get(categoryId, name) as { id: string } | undefined;
+function getOrCreateCreator(db: SqliteDatabase, libraryId: string, categoryId: string, name: string, info?: InfoJson, creatorPath?: string) {
+  const existing = db.prepare(`
+    SELECT id FROM creators
+    WHERE name = ? AND (library_id = ? OR (library_id IS NULL AND category_id = ?))
+    LIMIT 1
+  `).get(name, libraryId, categoryId) as { id: string } | undefined;
+  const profile = info ? {
+    alias: info.alias === undefined ? undefined : info.alias.trim() || null,
+    description: info.description === undefined ? undefined : info.description.trim() || null,
+    avatarPath: info.avatar === undefined ? undefined : resolveCreatorAssetPath(creatorPath, info.avatar),
+    bannerPath: info.banner === undefined ? undefined : resolveCreatorAssetPath(creatorPath, info.banner)
+  } : undefined;
   if (existing) {
-    if (alias !== undefined) db.prepare("UPDATE creators SET alias = ? WHERE id = ?").run(alias || null, existing.id);
+    db.prepare("UPDATE creators SET library_id = COALESCE(library_id, ?), category_id = COALESCE(category_id, ?) WHERE id = ?")
+      .run(libraryId, categoryId, existing.id);
+    if (profile) {
+      const fields: string[] = [];
+      const values: (string | null)[] = [];
+      if (profile.alias !== undefined) { fields.push("alias = ?"); values.push(profile.alias); }
+      if (profile.description !== undefined) { fields.push("description = ?"); values.push(profile.description); }
+      if (profile.avatarPath !== undefined) { fields.push("avatar_path = ?"); values.push(profile.avatarPath); }
+      if (profile.bannerPath !== undefined) { fields.push("banner_path = ?"); values.push(profile.bannerPath); }
+      if (fields.length > 0) {
+        fields.push("updated_at = ?");
+        values.push(nowIso());
+        db.prepare(`UPDATE creators SET ${fields.join(", ")} WHERE id = ?`).run(...values, existing.id);
+      }
+    }
     return existing.id;
   }
   const id = createId("up");
-  db.prepare("INSERT INTO creators (id, name, alias, category_id, created_at) VALUES (?, ?, ?, ?, ?)")
-    .run(id, name, alias || null, categoryId, nowIso());
+  db.prepare(`
+    INSERT INTO creators (id, name, alias, description, avatar_path, banner_path, library_id, category_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, name, profile?.alias ?? null, profile?.description ?? null, profile?.avatarPath ?? null, profile?.bannerPath ?? null, libraryId, categoryId, nowIso(), nowIso());
   return id;
+}
+
+function resolveCreatorAssetPath(creatorPath: string | undefined, value: string | undefined) {
+  if (!creatorPath || !value || !isImagePath(value)) return null;
+  const candidate = resolve(creatorPath, value);
+  const relativePath = relative(creatorPath, candidate);
+  if (relativePath.startsWith("..") || isAbsolute(relativePath) || !safeStat(candidate)?.isFile()) return null;
+  return candidate;
+}
+
+function createCreatorVideoMessage(db: SqliteDatabase, creatorId: string, itemId: string, kind: MediaKind, createdAt: string) {
+  if (kind !== "video") return;
+  const preference = db.prepare(`
+    SELECT followed, blacklisted, followed_at AS followedAt
+    FROM creator_preferences WHERE creator_id = ?
+  `).get(creatorId) as { followed: number; blacklisted: number; followedAt: string | null } | undefined;
+  if (!preference?.followed || preference.blacklisted || !preference.followedAt || preference.followedAt > createdAt) return;
+  db.prepare(`
+    INSERT OR IGNORE INTO creator_messages (id, creator_id, item_id, created_at)
+    VALUES (?, ?, ?, ?)
+  `).run(createId("msg"), creatorId, itemId, createdAt);
 }
 
 function applyTags(db: SqliteDatabase, itemId: string, rootPath: string, targetPath: string, tagsIndex: TagsIndex) {
@@ -944,6 +1005,36 @@ function readTagsIndex(rootPath: string): TagsIndex {
   } catch {
     return {};
   }
+}
+
+function pruneEmptyCategories(db: SqliteDatabase, libraryId: string) {
+  // `_待归类` is a filesystem-only staging directory. It is presented as
+  // `待归类` in the app, and old scanner versions may have left the literal
+  // folder name (or an empty `未归类`) behind in the database.
+  db.prepare(`
+    UPDATE creators
+    SET category_id = (
+      SELECT media_items.category_id FROM media_items
+      WHERE media_items.creator_id = creators.id AND media_items.category_id IS NOT NULL
+      ORDER BY media_items.first_seen_at ASC LIMIT 1
+    )
+    WHERE library_id = ?
+      AND category_id IN (
+        SELECT categories.id FROM categories
+        WHERE categories.library_id = ?
+          AND NOT EXISTS (SELECT 1 FROM media_items WHERE media_items.category_id = categories.id)
+      )
+  `).run(libraryId, libraryId);
+  db.prepare(`
+    DELETE FROM creators
+    WHERE (library_id = ? OR category_id IN (SELECT id FROM categories WHERE library_id = ?))
+      AND NOT EXISTS (SELECT 1 FROM media_items WHERE media_items.creator_id = creators.id)
+  `).run(libraryId, libraryId);
+  db.prepare(`
+    DELETE FROM categories
+    WHERE library_id = ?
+      AND NOT EXISTS (SELECT 1 FROM media_items WHERE media_items.category_id = categories.id)
+  `).run(libraryId);
 }
 
 export function listItemTags(itemId: string): ItemTag[] {
@@ -1543,8 +1634,8 @@ export async function createDemoLibrary(rootPath: string) {
   const hidden = join(root, "生活", "彩色UP", "[2026-06-17] 隐藏演示");
   [multipart, covered, purePost, videoPost, imagePool, hidden].forEach((path) => mkdirSync(path, { recursive: true }));
 
-  writeFileSync(join(root, "科技", "演示UP", "info.json"), JSON.stringify({ alias: "DemoCreator" }, null, 2));
-  writeFileSync(join(root, "摄影", "图片UP", "info.json"), JSON.stringify({ alias: "PhotoUP" }, null, 2));
+  writeFileSync(join(root, "科技", "演示UP", "info.json"), JSON.stringify({ alias: "DemoCreator", description: "演示多分 P、视频动态与特别关注消息的测试 UP。" }, null, 2));
+  writeFileSync(join(root, "摄影", "图片UP", "info.json"), JSON.stringify({ alias: "PhotoUP", description: "把图片、图文和一点颜色收进镜头里的 UP。" }, null, 2));
   writeFileSync(join(root, "_tags.json"), JSON.stringify({
     "科技": ["演示"],
     "科技/演示UP": ["科技", "测试"],
@@ -1554,6 +1645,7 @@ export async function createDemoLibrary(rootPath: string) {
 
   writeFileSync(join(multipart, "info.json"), JSON.stringify({
     title: "多分P交互演示",
+    description: "用两个短片段演示选集、续播和播放器交互。",
     published_at: "2026-06-20T12:00:00+08:00",
     p_titles: { P1: "彩条与声音", P2: "渐变与声音" }
   }, null, 2));

@@ -174,6 +174,7 @@ app.get<{ Querystring: { q?: string; limit?: string; offset?: string } }>("/sear
       AND (
         mi.title LIKE ? COLLATE NOCASE
         OR COALESCE(mi.post_body, '') LIKE ? COLLATE NOCASE
+        OR COALESCE(mi.description, '') LIKE ? COLLATE NOCASE
         OR COALESCE(cr.name, '') LIKE ? COLLATE NOCASE
         OR COALESCE(cr.alias, '') LIKE ? COLLATE NOCASE
         OR COALESCE(c.name, '') LIKE ? COLLATE NOCASE
@@ -186,7 +187,7 @@ app.get<{ Querystring: { q?: string; limit?: string; offset?: string } }>("/sear
           WHERE mp.item_id = mi.id AND mp.title LIKE ? COLLATE NOCASE
         )
       )`;
-  const params = Array.from({ length: 7 }, () => pattern);
+  const params = Array.from({ length: 8 }, () => pattern);
   const total = (db.prepare(`SELECT COUNT(*) AS count ${matchSql}`).get(...params) as { count: number }).count;
   const rows = db.prepare(`
     SELECT mi.id ${matchSql}
@@ -312,12 +313,17 @@ app.get<{ Params: { id: string }; Querystring: { seed?: string } }>("/feeds/cate
   })
 }));
 
-app.get<{ Params: { id: string }; Querystring: { seed?: string } }>("/feeds/creator/:id", async (request) => ({
+app.get<{ Params: { id: string }; Querystring: { seed?: string; limit?: string; offset?: string; kind?: "video" | "post" | "image" } }>("/feeds/creator/:id", async (request) => ({
   items: getRecommendedFeed({
     creatorId: request.params.id,
     seed: request.query.seed ?? request.params.id,
-    includeImages: false,
-    limit: 48
+    includeImages: true,
+    includeFinished: true,
+    kind: request.query.kind,
+    limit: Number(request.query.limit ?? 48),
+    offset: Number(request.query.offset ?? 0),
+    mode: "latest",
+    includeBlacklisted: true
   })
 }));
 
@@ -327,13 +333,14 @@ app.get("/categories", async () => ({
     FROM categories c
     LEFT JOIN media_items mi ON mi.category_id = c.id
     GROUP BY c.id
+    HAVING COUNT(mi.id) > 0
     ORDER BY itemCount DESC, c.name ASC
   `).all()
 }));
 
 app.get("/creators", async () => ({
   creators: db.prepare(`
-    SELECT cr.id, cr.name, cr.alias, c.name AS categoryName, COUNT(mi.id) AS itemCount
+    SELECT cr.id, cr.name, cr.alias, cr.description, c.name AS categoryName, COUNT(mi.id) AS itemCount
     FROM creators cr
     LEFT JOIN categories c ON c.id = cr.category_id
     LEFT JOIN media_items mi ON mi.creator_id = cr.id
@@ -342,9 +349,52 @@ app.get("/creators", async () => ({
   `).all()
 }));
 
+app.get<{ Params: { id: string } }>("/creators/:id", async (request, reply) => {
+  const creator = db.prepare(`
+    SELECT cr.id, cr.name, cr.alias, cr.description,
+      CASE WHEN cr.avatar_path IS NOT NULL THEN '/media/creators/' || cr.id || '/avatar' ELSE NULL END AS avatarUrl,
+      CASE WHEN cr.banner_path IS NOT NULL THEN '/media/creators/' || cr.id || '/banner' ELSE NULL END AS bannerUrl,
+      COALESCE(cp.followed, 0) AS followed, COALESCE(cp.blacklisted, 0) AS blacklisted
+    FROM creators cr
+    LEFT JOIN creator_preferences cp ON cp.creator_id = cr.id
+    WHERE cr.id = ?
+  `).get(request.params.id) as Record<string, unknown> | undefined;
+  if (!creator) return reply.code(404).send({ error: "Creator not found" });
+  const stats = db.prepare(`
+    SELECT COUNT(*) AS itemCount,
+      SUM(CASE WHEN kind = 'video' THEN 1 ELSE 0 END) AS videoCount,
+      SUM(CASE WHEN kind = 'post' THEN 1 ELSE 0 END) AS postCount,
+      SUM(CASE WHEN kind = 'image' THEN 1 ELSE 0 END) AS imageCount
+    FROM media_items WHERE creator_id = ? AND hidden = 0
+  `).get(request.params.id);
+  const categories = db.prepare(`
+    SELECT c.id, c.name, COUNT(mi.id) AS itemCount
+    FROM media_items mi JOIN categories c ON c.id = mi.category_id
+    WHERE mi.creator_id = ? AND mi.hidden = 0
+    GROUP BY c.id ORDER BY itemCount DESC, c.name ASC
+  `).all(request.params.id);
+  return { creator, stats, categories };
+});
+
+app.get<{ Params: { id: string }; Querystring: { kind?: "video" | "post" | "image"; limit?: string; offset?: string } }>("/creators/:id/items", async (request, reply) => {
+  const exists = db.prepare("SELECT 1 FROM creators WHERE id = ?").get(request.params.id);
+  if (!exists) return reply.code(404).send({ error: "Creator not found" });
+  const requestedLimit = Number(request.query.limit ?? 24);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 80) : 24;
+  const offset = Math.max(Number(request.query.offset ?? 0), 0);
+  const kind = request.query.kind;
+  const count = db.prepare(`
+    SELECT COUNT(*) AS count FROM media_items
+    WHERE creator_id = ? AND hidden = 0 ${kind ? "AND kind = ?" : ""}
+  `).get(...(kind ? [request.params.id, kind] : [request.params.id])) as { count: number };
+  const items = getRecommendedFeed({ creatorId: request.params.id, kind, limit, offset, includeImages: true, includeFinished: true, includeBlacklisted: true, mode: "latest" });
+  return { items, total: count.count, hasMore: offset + items.length < count.count };
+});
+
 app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
   const item = db.prepare(`
     SELECT mi.*, c.name AS categoryName, cr.name AS creatorName, cr.alias AS creatorAlias,
+      CASE WHEN cr.avatar_path IS NOT NULL THEN '/media/creators/' || cr.id || '/avatar' ELSE NULL END AS creatorAvatarUrl,
       ip.reaction, ip.coined, ip.coined_at AS coinedAt,
       COALESCE(cp.blacklisted, 0) AS creatorBlacklisted,
       wp.part_id AS resumePartId, wp.position_seconds AS resumePositionSeconds
@@ -483,6 +533,21 @@ app.get<{ Params: { id: string } }>("/media/items/:id/cover", async (request, re
   return reply.send(createReadStream(coverPath));
 });
 
+app.get<{ Params: { id: string; variant: "avatar" | "banner" } }>("/media/creators/:id/:variant", async (request, reply) => {
+  if (request.params.variant !== "avatar" && request.params.variant !== "banner") {
+    return reply.code(404).send({ error: "Creator asset not found" });
+  }
+  const row = db.prepare("SELECT avatar_path AS avatarPath, banner_path AS bannerPath FROM creators WHERE id = ?").get(request.params.id) as
+    | { avatarPath: string | null; bannerPath: string | null }
+    | undefined;
+  const assetPath = request.params.variant === "avatar" ? row?.avatarPath : row?.bannerPath;
+  if (!assetPath || !existsSync(assetPath)) return reply.code(404).send({ error: "Creator asset not found" });
+  reply.header("Content-Type", lookup(assetPath) || "application/octet-stream");
+  reply.header("Cache-Control", "public, max-age=604800");
+  reply.header("X-Content-Type-Options", "nosniff");
+  return reply.send(createReadStream(assetPath));
+});
+
 app.get<{ Params: { id: string } }>("/media/parts/:id/sprite", async (request, reply) => {
   const row = db.prepare("SELECT preview_sprite_path FROM media_parts WHERE id = ?").get(request.params.id) as
     | { preview_sprite_path: string | null }
@@ -548,13 +613,68 @@ app.put<{ Params: { id: string }; Body: Record<string, never> | undefined }>("/i
   return { coined: Boolean(nextCoined) };
 });
 
-app.put<{ Params: { id: string }; Body: { blacklisted?: boolean } }>("/creators/:id/blacklist", async (request) => {
+app.put<{ Params: { id: string }; Body: { followed?: boolean } }>("/creators/:id/follow", async (request, reply) => {
+  const exists = db.prepare("SELECT 1 FROM creators WHERE id = ?").get(request.params.id);
+  if (!exists) return reply.code(404).send({ error: "Creator not found" });
+  const followed = Boolean(request.body.followed);
+  const current = db.prepare("SELECT blacklisted FROM creator_preferences WHERE creator_id = ?").get(request.params.id) as { blacklisted: number } | undefined;
+  if (followed && current?.blacklisted) return reply.code(409).send({ error: "Unblock this creator before following" });
+  const timestamp = nowIso();
+  db.prepare(`
+    INSERT INTO creator_preferences (creator_id, blacklisted, followed, followed_at, updated_at)
+    VALUES (?, 0, ?, ?, ?)
+    ON CONFLICT(creator_id) DO UPDATE SET
+      followed = excluded.followed,
+      followed_at = CASE WHEN excluded.followed = 1 THEN excluded.followed_at ELSE NULL END,
+      updated_at = excluded.updated_at
+  `).run(request.params.id, followed ? 1 : 0, followed ? timestamp : null, timestamp);
+  return { followed };
+});
+
+app.put<{ Params: { id: string }; Body: { blacklisted?: boolean } }>("/creators/:id/blacklist", async (request, reply) => {
+  const exists = db.prepare("SELECT 1 FROM creators WHERE id = ?").get(request.params.id);
+  if (!exists) return reply.code(404).send({ error: "Creator not found" });
   const blacklisted = Boolean(request.body.blacklisted);
   db.prepare(`
-    INSERT INTO creator_preferences (creator_id, blacklisted, updated_at) VALUES (?, ?, ?)
-    ON CONFLICT(creator_id) DO UPDATE SET blacklisted = excluded.blacklisted, updated_at = excluded.updated_at
+    INSERT INTO creator_preferences (creator_id, blacklisted, followed, followed_at, updated_at) VALUES (?, ?, 0, NULL, ?)
+    ON CONFLICT(creator_id) DO UPDATE SET
+      blacklisted = excluded.blacklisted,
+      followed = CASE WHEN excluded.blacklisted = 1 THEN 0 ELSE creator_preferences.followed END,
+      followed_at = CASE WHEN excluded.blacklisted = 1 THEN NULL ELSE creator_preferences.followed_at END,
+      updated_at = excluded.updated_at
   `).run(request.params.id, blacklisted ? 1 : 0, nowIso());
+  if (blacklisted) db.prepare("DELETE FROM creator_messages WHERE creator_id = ?").run(request.params.id);
   return { blacklisted };
+});
+
+app.get("/me/messages/unread-count", async () => ({
+  unreadCount: (db.prepare("SELECT COUNT(*) AS count FROM creator_messages WHERE read_at IS NULL").get() as { count: number }).count
+}));
+
+app.get<{ Querystring: { limit?: string; offset?: string } }>("/me/messages", async (request) => {
+  const requestedLimit = Number(request.query.limit ?? 40);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 80) : 40;
+  const offset = Math.max(Number(request.query.offset ?? 0), 0);
+  const rows = db.prepare(`
+    SELECT cm.id, cm.item_id AS itemId, cm.creator_id AS creatorId, cm.created_at AS createdAt, cm.read_at AS readAt
+    FROM creator_messages cm JOIN media_items mi ON mi.id = cm.item_id
+    WHERE mi.hidden = 0 ORDER BY cm.created_at DESC LIMIT ? OFFSET ?
+  `).all(limit, offset) as { id: string; itemId: string; creatorId: string; createdAt: string; readAt: string | null }[];
+  const feedItems = getFeedItemsByIds(rows.map((row) => row.itemId));
+  const byId = new Map(feedItems.map((item) => [item.id, item]));
+  const messages = rows.flatMap((row) => {
+    const item = byId.get(row.itemId);
+    return item ? [{ ...row, item }] : [];
+  });
+  const total = (db.prepare("SELECT COUNT(*) AS count FROM creator_messages").get() as { count: number }).count;
+  const unreadCount = (db.prepare("SELECT COUNT(*) AS count FROM creator_messages WHERE read_at IS NULL").get() as { count: number }).count;
+  return { messages, total, unreadCount, hasMore: offset + rows.length < total };
+});
+
+app.put("/me/messages/read", async () => {
+  const timestamp = nowIso();
+  db.prepare("UPDATE creator_messages SET read_at = ? WHERE read_at IS NULL").run(timestamp);
+  return { readAt: timestamp };
 });
 
 app.get<{ Params: { id: string }; Headers: { range?: string } }>("/media/parts/:id/stream", async (request, reply) => {

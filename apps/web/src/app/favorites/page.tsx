@@ -214,7 +214,7 @@ function FavoriteCard({
           {item.title}
         </Link>
         <p className="mt-1 truncate text-xs text-white/42">
-          {item.creatorName} · {item.categoryName}
+          {item.creatorId ? <Link href={`/creator/${item.creatorId}`} className="hover:text-[var(--accent)]">{item.creatorName}</Link> : item.creatorName} · {item.categoryName}
         </p>
         <div className="mt-3 flex items-center gap-x-3 text-xs">
           <span className="text-[var(--accent)]">已收藏</span>

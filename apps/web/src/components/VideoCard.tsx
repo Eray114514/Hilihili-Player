@@ -10,9 +10,11 @@ import { VideoPreview } from "@/components/VideoPreview";
 
 export function VideoCard({ item, eager = false }: { item: FeedItem; eager?: boolean }) {
   const cover = assetUrl(item.coverUrl);
+  const href = item.playable ? `/watch/${item.id}` : `/dynamic/${item.id}`;
 
   return (
-    <Link href={item.playable ? `/watch/${item.id}` : `/dynamic/${item.id}`} className="group block min-w-0">
+    <article className="group min-w-0">
+      <Link href={href} className="block">
       <div className="relative aspect-video overflow-hidden rounded-lg bg-[#1a1b20] ring-1 ring-white/8">
         {item.playable ? (
           <VideoPreview
@@ -38,15 +40,18 @@ export function VideoCard({ item, eager = false }: { item: FeedItem; eager?: boo
           </div>
         )}
         <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/75 to-transparent px-2 pb-2 pt-9 text-xs text-white/82">
-          <span>{item.creatorName}</span>
+          <span>{item.kind === "post" ? "动态视频" : item.kind === "image" ? "图集" : "视频"}</span>
           {item.kind === "post" ? <span className="rounded bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-semibold text-black">动态视频</span> : item.partCount && item.partCount > 1 ? <span>{item.partCount}P</span> : null}
         </div>
       </div>
+      </Link>
       <h3 className="mt-2 line-clamp-2 min-h-10 text-sm font-medium leading-5 text-white transition group-hover:text-[var(--accent)]">
+        <Link href={href} className="hover:text-[var(--accent)]">
         {item.title}
+        </Link>
       </h3>
-      <p className="mt-1 flex items-center justify-between gap-2 truncate text-xs text-white/45"><span className="truncate">{item.categoryName}</span><time className="shrink-0">{formatDate(item.displayDate)}</time></p>
-    </Link>
+      <p className="mt-1 flex items-center justify-between gap-2 truncate text-xs text-white/45"><span className="min-w-0 truncate">{item.creatorId ? <Link href={`/creator/${item.creatorId}`} className="hover:text-[var(--accent)]">{item.creatorName}</Link> : item.creatorName}<span className="mx-1 text-white/25">·</span>{item.categoryName}</span><time className="shrink-0">{formatDate(item.displayDate)}</time></p>
+    </article>
   );
 }
 
@@ -55,17 +60,17 @@ export function CompactVideoCard({ item }: { item: FeedItem }) {
   const [imageFailed, setImageFailed] = useState(false);
   const showCover = cover && !imageFailed;
   return (
-    <Link href={item.playable ? `/watch/${item.id}` : `/dynamic/${item.id}`} className="group flex gap-3 rounded-lg p-1.5 transition hover:bg-white/5">
-      <div className="relative aspect-video w-36 shrink-0 overflow-hidden rounded-lg bg-white/5 ring-1 ring-white/8">
+    <article className="group flex gap-3 rounded-lg p-1.5 transition hover:bg-white/5">
+      <Link href={item.playable ? `/watch/${item.id}` : `/dynamic/${item.id}`} className="relative aspect-video w-36 shrink-0 overflow-hidden rounded-lg bg-white/5 ring-1 ring-white/8">
         {showCover ? <ApiImage src={cover} alt="" fill sizes="144px" className="object-cover transition group-hover:scale-105" onError={() => setImageFailed(true)} /> : <div className="grid h-full place-items-center text-white/35"><Play size={24} /></div>}
         {item.partCount && item.partCount > 1 ? <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px]">{item.partCount}P</span> : null}
-      </div>
+      </Link>
       <div className="min-w-0 py-0.5">
-        <h3 className="line-clamp-2 text-sm font-medium leading-5 group-hover:text-[var(--accent)]">{item.title}</h3>
-        <p className="mt-2 truncate text-xs text-white/45">{item.creatorName}</p>
+        <h3 className="line-clamp-2 text-sm font-medium leading-5"><Link href={item.playable ? `/watch/${item.id}` : `/dynamic/${item.id}`} className="hover:text-[var(--accent)]">{item.title}</Link></h3>
+        <p className="mt-2 truncate text-xs text-white/45">{item.creatorId ? <Link href={`/creator/${item.creatorId}`} className="hover:text-[var(--accent)]">{item.creatorName}</Link> : item.creatorName}</p>
         <time className="mt-1 block text-[11px] text-white/35">{formatDate(item.displayDate)}</time>
       </div>
-    </Link>
+    </article>
   );
 }
 

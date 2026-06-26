@@ -1,4 +1,10 @@
-export const videoExtensions = [".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".flv"] as const;
+// Containers supported by the scanner. Formats that browsers cannot play
+// natively are converted to an H.264/AAC MP4 stream by the media worker.
+export const videoExtensions = [
+  ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".flv",
+  ".ts", ".m2ts", ".mts", ".mpg", ".mpeg", ".mpeg2",
+  ".3gp", ".3g2", ".ogv", ".wmv", ".asf", ".vob", ".rm", ".rmvb"
+] as const;
 export const imageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"] as const;
 
 export type MediaKind = "video" | "image" | "post";
@@ -16,6 +22,7 @@ export type FeedItem = {
   creatorId: string | null;
   creatorName: string;
   creatorAlias: string | null;
+  creatorAvatarUrl: string | null;
   coverUrl: string | null;
   thumbnailStatus: ThumbnailStatus;
   firstSeenAt: string;

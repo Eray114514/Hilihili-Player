@@ -59,15 +59,22 @@ function migrate(db: Database.Database) {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       alias TEXT,
+      description TEXT,
+      avatar_path TEXT,
+      banner_path TEXT,
+      library_id TEXT REFERENCES libraries(id),
       category_id TEXT REFERENCES categories(id),
       created_at TEXT NOT NULL,
-      UNIQUE(category_id, name)
+      updated_at TEXT,
+      UNIQUE(category_id, name),
+      UNIQUE(library_id, name)
     );
     CREATE TABLE IF NOT EXISTS media_items (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
       title TEXT NOT NULL,
       post_body TEXT,
+      description TEXT,
       library_id TEXT NOT NULL REFERENCES libraries(id),
       category_id TEXT REFERENCES categories(id),
       creator_id TEXT REFERENCES creators(id),
@@ -155,7 +162,16 @@ function migrate(db: Database.Database) {
     CREATE TABLE IF NOT EXISTS creator_preferences (
       creator_id TEXT PRIMARY KEY REFERENCES creators(id) ON DELETE CASCADE,
       blacklisted INTEGER NOT NULL DEFAULT 0,
+      followed INTEGER NOT NULL DEFAULT 0,
+      followed_at TEXT,
       updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS creator_messages (
+      id TEXT PRIMARY KEY,
+      creator_id TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+      item_id TEXT NOT NULL UNIQUE REFERENCES media_items(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      read_at TEXT
     );
     CREATE TABLE IF NOT EXISTS favorite_folders (
       id TEXT PRIMARY KEY,
@@ -188,10 +204,13 @@ function migrate(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS comments_item_idx ON comments(item_id);
     CREATE INDEX IF NOT EXISTS favorites_folder_idx ON favorites(folder_id);
     CREATE INDEX IF NOT EXISTS favorites_item_idx ON favorites(item_id);
+    CREATE INDEX IF NOT EXISTS creator_messages_creator_idx ON creator_messages(creator_id);
+    CREATE INDEX IF NOT EXISTS creator_messages_created_idx ON creator_messages(created_at);
   `);
 
   ensureColumn(db, "media_items", "generated_cover_path", "TEXT");
   ensureColumn(db, "media_items", "post_body", "TEXT");
+  ensureColumn(db, "media_items", "description", "TEXT");
   ensureColumn(db, "media_items", "thumbnail_status", "TEXT NOT NULL DEFAULT 'pending'");
   ensureColumn(db, "media_items", "thumbnail_error", "TEXT");
   ensureColumn(db, "media_items", "content_published_at", "TEXT");
@@ -210,6 +229,11 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "media_parts", "compatibility_status", "TEXT NOT NULL DEFAULT 'pending'");
   ensureColumn(db, "media_parts", "compatibility_error", "TEXT");
   ensureColumn(db, "creators", "alias", "TEXT");
+  ensureColumn(db, "creators", "description", "TEXT");
+  ensureColumn(db, "creators", "avatar_path", "TEXT");
+  ensureColumn(db, "creators", "banner_path", "TEXT");
+  ensureColumn(db, "creators", "library_id", "TEXT");
+  ensureColumn(db, "creators", "updated_at", "TEXT");
   ensureColumn(db, "watch_progress", "started_at", "TEXT");
   ensureColumn(db, "watch_progress", "completed_at", "TEXT");
   ensureColumn(db, "item_preferences", "coined", "INTEGER NOT NULL DEFAULT 0");
@@ -217,7 +241,11 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "media_tags", "source", "TEXT NOT NULL DEFAULT 'scan'");
   ensureColumn(db, "media_tags", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "media_tags", "created_at", "TEXT");
+  ensureColumn(db, "creator_preferences", "followed", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "creator_preferences", "followed_at", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS media_items_library_relative_idx ON media_items(library_id, relative_path)");
+  mergeLegacyCreators(db);
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS creators_library_name_idx ON creators(library_id, name)");
 
   db.exec(`
     UPDATE watch_progress SET started_at = updated_at WHERE started_at IS NULL;
@@ -258,6 +286,67 @@ function migrate(db: Database.Database) {
     UPDATE media_parts SET title = trim(substr(title, length('[未知]') + 1))
     WHERE title LIKE '[未知]%' AND trim(substr(title, length('[未知]') + 1)) != '';
   `);
+}
+
+function mergeLegacyCreators(db: Database.Database) {
+  db.exec(`
+    UPDATE creators
+    SET library_id = (
+      SELECT categories.library_id FROM categories WHERE categories.id = creators.category_id
+    )
+    WHERE library_id IS NULL;
+  `);
+  const rows = db.prepare(`
+    SELECT id, name, library_id AS libraryId, category_id AS categoryId, created_at AS createdAt,
+      alias, description, avatar_path AS avatarPath, banner_path AS bannerPath
+    FROM creators WHERE library_id IS NOT NULL
+    ORDER BY created_at ASC, id ASC
+  `).all() as {
+    id: string; name: string; libraryId: string; categoryId: string | null; createdAt: string;
+    alias: string | null; description: string | null; avatarPath: string | null; bannerPath: string | null;
+  }[];
+  const groups = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const key = `${row.libraryId}\u0000${row.name}`;
+    const group = groups.get(key) ?? [];
+    group.push(row);
+    groups.set(key, group);
+  }
+  const merge = db.transaction(() => {
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      const canonical = group[0];
+      for (const duplicate of group.slice(1)) {
+        db.prepare(`
+          UPDATE creators
+          SET alias = COALESCE(alias, ?), description = COALESCE(description, ?),
+            avatar_path = COALESCE(avatar_path, ?), banner_path = COALESCE(banner_path, ?)
+          WHERE id = ?
+        `).run(duplicate.alias, duplicate.description, duplicate.avatarPath, duplicate.bannerPath, canonical.id);
+        db.prepare("UPDATE media_items SET creator_id = ? WHERE creator_id = ?").run(canonical.id, duplicate.id);
+        db.prepare("UPDATE interactions SET target_id = ? WHERE target_type = 'creator' AND target_id = ?").run(canonical.id, duplicate.id);
+        db.prepare("UPDATE creator_messages SET creator_id = ? WHERE creator_id = ?").run(canonical.id, duplicate.id);
+        const preference = db.prepare(`
+          SELECT blacklisted, followed, followed_at AS followedAt, updated_at AS updatedAt
+          FROM creator_preferences WHERE creator_id = ?
+        `).get(duplicate.id) as { blacklisted: number; followed: number; followedAt: string | null; updatedAt: string } | undefined;
+        if (preference) {
+          db.prepare(`
+            INSERT INTO creator_preferences (creator_id, blacklisted, followed, followed_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(creator_id) DO UPDATE SET
+              blacklisted = MAX(creator_preferences.blacklisted, excluded.blacklisted),
+              followed = MAX(creator_preferences.followed, excluded.followed),
+              followed_at = COALESCE(MIN(creator_preferences.followed_at, excluded.followed_at), creator_preferences.followed_at, excluded.followed_at),
+              updated_at = MAX(creator_preferences.updated_at, excluded.updated_at)
+          `).run(canonical.id, preference.blacklisted, preference.followed, preference.followedAt, preference.updatedAt);
+          db.prepare("DELETE FROM creator_preferences WHERE creator_id = ?").run(duplicate.id);
+        }
+        db.prepare("DELETE FROM creators WHERE id = ?").run(duplicate.id);
+      }
+    }
+  });
+  merge();
 }
 
 function ensureColumn(db: Database.Database, table: string, column: string, definition: string) {
