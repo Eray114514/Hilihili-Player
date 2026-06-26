@@ -12,6 +12,7 @@
   "dependencies": {
     "@hilihili/shared": "file:../../packages/shared",
     "lucide-react": "^0.561.0",
+    "motion": "^12.42.0",
     "next": "16.2.9",
     "react": "19.2.4",
     "react-dom": "19.2.4"

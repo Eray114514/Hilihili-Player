@@ -4,6 +4,7 @@ import { ArrowLeft, ImageIcon, Play } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { AnimatePresence } from "motion/react";
 import { AppShell } from "@/components/AppShell";
 import { CreatorAvatar } from "@/components/CreatorAvatar";
 import { ImageLightbox } from "@/components/ImageLightbox";
@@ -32,7 +33,7 @@ export default function DynamicDetailPage() {
       <main className="mx-auto max-w-[920px]">
         <Link href="/dynamic" className="mb-4 inline-flex items-center gap-2 text-sm text-white/48 hover:text-white"><ArrowLeft size={17} /> 返回动态</Link>
         {failed ? <div className="rounded-2xl border border-white/8 bg-white/[0.025] p-10 text-center text-white/55">这条动态不存在，或媒体库尚未完成扫描。</div> : !detail ? <DetailSkeleton /> : (
-          <article className="overflow-hidden rounded-2xl border border-white/8 bg-[#12151c] shadow-2xl shadow-black/15">
+          <article className="animate-fade-in overflow-hidden rounded-2xl border border-white/8 bg-[#12151c] shadow-2xl shadow-black/15">
             <header className="flex gap-3 border-b border-white/7 p-5 md:p-7">
               <CreatorAvatar creatorId={detail.item.creator_id} name={detail.item.creatorName} avatarUrl={detail.item.creatorAvatarUrl} size="lg" />
               <div className="min-w-0">
@@ -61,7 +62,9 @@ export default function DynamicDetailPage() {
           </article>
         )}
       </main>
-      {detail && lightboxIndex !== null ? <ImageLightbox images={detail.images} index={lightboxIndex} onChange={setLightboxIndex} onClose={() => setLightboxIndex(null)} /> : null}
+      <AnimatePresence>
+        {detail && lightboxIndex !== null ? <ImageLightbox images={detail.images} index={lightboxIndex} onChange={setLightboxIndex} onClose={() => setLightboxIndex(null)} /> : null}
+      </AnimatePresence>
     </AppShell>
   );
 }
@@ -72,5 +75,5 @@ function formatDate(value: string) {
 }
 
 function DetailSkeleton() {
-  return <div className="animate-pulse overflow-hidden rounded-2xl border border-white/7 bg-white/[0.025]"><div className="flex gap-3 border-b border-white/6 p-7"><div className="h-14 w-14 rounded-full bg-white/6" /><div className="flex-1"><div className="h-5 w-32 rounded bg-white/6" /><div className="mt-3 h-3 w-52 rounded bg-white/[0.035]" /></div></div><div className="p-7"><div className="h-7 w-2/3 rounded bg-white/6" /><div className="mt-5 h-4 w-full rounded bg-white/[0.035]" /><div className="mt-3 h-4 w-4/5 rounded bg-white/[0.035]" /><div className="mt-7 aspect-video rounded-xl bg-white/5" /></div></div>;
+  return <div className="skeleton-shimmer overflow-hidden rounded-2xl border border-white/7 bg-white/[0.025]"><div className="flex gap-3 border-b border-white/6 p-7"><div className="h-14 w-14 rounded-full bg-white/6" /><div className="flex-1"><div className="h-5 w-32 rounded bg-white/6" /><div className="mt-3 h-3 w-52 rounded bg-white/[0.035]" /></div></div><div className="p-7"><div className="h-7 w-2/3 rounded bg-white/6" /><div className="mt-5 h-4 w-full rounded bg-white/[0.035]" /><div className="mt-3 h-4 w-4/5 rounded bg-white/[0.035]" /><div className="mt-7 aspect-video rounded-xl bg-white/5" /></div></div>;
 }

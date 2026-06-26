@@ -94,6 +94,8 @@ export type FavoriteEntry = {
   favoritedAt: string;
 };
 
+export type SearchHistoryItem = { id: string; query: string; searchedAt: number };
+
 export function isVideoPath(pathname: string) {
   return videoExtensions.some((extension) => pathname.toLowerCase().endsWith(extension));
 }

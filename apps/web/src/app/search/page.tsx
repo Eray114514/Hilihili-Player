@@ -73,12 +73,12 @@ function SearchResults({ query }: { query: string }) {
       ) : items.length === 0 ? (
         <SearchMessage icon={<SearchX size={32} />} title="没有找到相关内容" body="试试更短的关键词，或换用 UP 主、分区和标签名称。" />
       ) : (
-        <>
+        <div className="animate-fade-in">
           <VideoGrid items={items} />
           <div className="flex min-h-28 items-center justify-center pt-10">
             {hasMore ? <button type="button" className="secondary-button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? <LoaderCircle className="animate-spin" size={17} /> : null}{loadingMore ? "继续搜索…" : "加载更多结果"}</button> : <span className="text-sm text-white/35">全部结果都在这里了</span>}
           </div>
-        </>
+        </div>
       )}
     </AppShell>
   );
@@ -93,5 +93,5 @@ function SearchPageSkeleton() {
 }
 
 function ResultSkeleton() {
-  return <div className="grid animate-pulse grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">{Array.from({ length: 12 }, (_, index) => <div key={index}><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-2 h-4 rounded bg-white/5" /><div className="mt-2 h-3 w-1/2 rounded bg-white/[0.035]" /></div>)}</div>;
+  return <div className="grid skeleton-shimmer grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">{Array.from({ length: 12 }, (_, index) => <div key={index}><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-2 h-4 rounded bg-white/5" /><div className="mt-2 h-3 w-1/2 rounded bg-white/[0.035]" /></div>)}</div>;
 }

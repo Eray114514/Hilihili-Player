@@ -261,3 +261,15 @@ export const favorites = sqliteTable(
     byPair: uniqueIndex("favorites_pair_idx").on(table.folderId, table.itemId)
   })
 );
+
+export const searchHistory = sqliteTable(
+  "search_history",
+  {
+    id: text("id").primaryKey(),
+    query: text("query").notNull(),
+    searchedAt: integer("searched_at").notNull()
+  },
+  (table) => ({
+    byQuery: uniqueIndex("search_history_query_idx").on(table.query)
+  })
+);

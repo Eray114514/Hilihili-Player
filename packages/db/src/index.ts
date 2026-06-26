@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import type { SearchHistoryItem } from "@hilihili/shared";
 import * as schema from "./schema.js";
 
 let sqlite: Database.Database | null = null;
@@ -185,6 +186,12 @@ function migrate(db: Database.Database) {
       created_at TEXT NOT NULL,
       UNIQUE(folder_id, item_id)
     );
+    CREATE TABLE IF NOT EXISTS search_history (
+      id TEXT PRIMARY KEY,
+      query TEXT NOT NULL,
+      searched_at INTEGER NOT NULL,
+      UNIQUE(query)
+    );
     CREATE TABLE IF NOT EXISTS media_subtitles (
       id TEXT PRIMARY KEY,
       part_id TEXT NOT NULL REFERENCES media_parts(id) ON DELETE CASCADE,
@@ -355,6 +362,34 @@ function ensureColumn(db: Database.Database, table: string, column: string, defi
   if (!columns.some((item) => item.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
+}
+
+export function upsertSearchHistory(query: string): void {
+  const normalized = query.trim().replace(/\s+/g, " ");
+  if (!normalized) return;
+  getSqlite().prepare(`
+    INSERT INTO search_history (id, query, searched_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(query) DO UPDATE SET searched_at = excluded.searched_at
+  `).run(createId("srch"), normalized, Date.now());
+}
+
+export function listSearchHistory(limit = 20): SearchHistoryItem[] {
+  const rows = getSqlite().prepare(`
+    SELECT id, query, searched_at AS searchedAt
+    FROM search_history
+    ORDER BY searched_at DESC
+    LIMIT ?
+  `).all(limit) as SearchHistoryItem[];
+  return rows;
+}
+
+export function clearSearchHistory(): void {
+  getSqlite().prepare("DELETE FROM search_history").run();
+}
+
+export function deleteSearchHistory(id: string): void {
+  getSqlite().prepare("DELETE FROM search_history WHERE id = ?").run(id);
 }
 
 export type SqliteDatabase = Database.Database;

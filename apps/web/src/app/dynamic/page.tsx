@@ -48,7 +48,7 @@ export default function DynamicPage() {
         </section>
 
         {failed ? <div className="rounded-2xl border border-red-400/15 bg-red-400/5 p-8 text-center text-sm text-red-100/70">动态加载失败，请确认 API 服务正在运行。</div> : loading ? <DynamicSkeleton /> : items.length === 0 ? <EmptyState title="动态还是空的" body="添加媒体库并扫描后，视频、图文和图集会按内容时间出现在这里。" /> : (
-          <div className="space-y-4">{items.map((item) => <DynamicFeedCard key={item.id} item={item} />)}</div>
+          <div className="space-y-4 animate-fade-in">{items.map((item) => <DynamicFeedCard key={item.id} item={item} />)}</div>
         )}
       </div>
     </AppShell>
@@ -56,5 +56,5 @@ export default function DynamicPage() {
 }
 
 function DynamicSkeleton() {
-  return <div className="space-y-4 animate-pulse">{Array.from({ length: 4 }, (_, index) => <div key={index} className="rounded-2xl border border-white/6 bg-white/[0.025] p-5"><div className="flex gap-3"><div className="h-11 w-11 rounded-full bg-white/6" /><div className="flex-1"><div className="h-4 w-32 rounded bg-white/6" /><div className="mt-2 h-3 w-48 rounded bg-white/[0.035]" /></div></div><div className="ml-14 mt-5 h-4 w-2/3 rounded bg-white/5" /><div className="ml-14 mt-4 aspect-video rounded-xl bg-white/5" /></div>)}</div>;
+  return <div className="space-y-4 skeleton-shimmer">{Array.from({ length: 4 }, (_, index) => <div key={index} className="rounded-2xl border border-white/6 bg-white/[0.025] p-5"><div className="flex gap-3"><div className="h-11 w-11 rounded-full bg-white/6" /><div className="flex-1"><div className="h-4 w-32 rounded bg-white/6" /><div className="mt-2 h-3 w-48 rounded bg-white/[0.035]" /></div></div><div className="ml-14 mt-5 h-4 w-2/3 rounded bg-white/5" /><div className="ml-14 mt-4 aspect-video rounded-xl bg-white/5" /></div>)}</div>;
 }
