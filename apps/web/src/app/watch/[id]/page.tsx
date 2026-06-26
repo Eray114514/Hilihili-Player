@@ -1,6 +1,6 @@
 "use client";
 
-import { Ban, Bookmark, BookOpen, Coins, ExternalLink, MoreHorizontal, Send, ThumbsDown, ThumbsUp } from "lucide-react";
+import { Ban, BookOpen, Check, CircleDollarSign, ExternalLink, MoreHorizontal, Plus, Send, Star, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
@@ -22,6 +22,10 @@ export default function WatchPage() {
   const [favoritedFolderIds, setFavoritedFolderIds] = useState<string[]>([]);
   const [folders, setFolders] = useState<FavoriteFolder[]>([]);
   const [newFolderName, setNewFolderName] = useState("");
+  const [favoritePanelOpen, setFavoritePanelOpen] = useState(false);
+  const [favoriteBusyId, setFavoriteBusyId] = useState<string | null>(null);
+  const [tagDraft, setTagDraft] = useState("");
+  const [tagBusy, setTagBusy] = useState<string | null>(null);
 
   useEffect(() => {
     let ignore = false;
@@ -76,14 +80,28 @@ export default function WatchPage() {
 
   async function toggleFavorite(folderId: string) {
     const isFavorited = favoritedFolderIds.includes(folderId);
-    if (isFavorited) {
-      await deleteJson(`/items/${params.id}/favorites?folderId=${folderId}`);
-      setFavoritedFolderIds((current) => current.filter((id) => id !== folderId));
-      setFolders((current) => current.map((folder) => folder.id === folderId ? { ...folder, itemCount: Math.max(0, folder.itemCount - 1) } : folder));
-    } else {
-      await postJson(`/items/${params.id}/favorites`, { folderId });
-      setFavoritedFolderIds((current) => [...current, folderId]);
-      setFolders((current) => current.map((folder) => folder.id === folderId ? { ...folder, itemCount: folder.itemCount + 1 } : folder));
+    setFavoriteBusyId(folderId);
+    try {
+      if (isFavorited) {
+        setFavoritedFolderIds((current) => current.filter((id) => id !== folderId));
+        setFolders((current) => current.map((folder) => folder.id === folderId ? { ...folder, itemCount: Math.max(0, folder.itemCount - 1) } : folder));
+        await deleteJson(`/items/${params.id}/favorites?folderId=${folderId}`);
+      } else {
+        setFavoritedFolderIds((current) => current.includes(folderId) ? current : [...current, folderId]);
+        setFolders((current) => current.map((folder) => folder.id === folderId ? { ...folder, itemCount: folder.itemCount + 1 } : folder));
+        await postJson(`/items/${params.id}/favorites`, { folderId });
+      }
+    } catch (error) {
+      if (isFavorited) {
+        setFavoritedFolderIds((current) => current.includes(folderId) ? current : [...current, folderId]);
+        setFolders((current) => current.map((folder) => folder.id === folderId ? { ...folder, itemCount: folder.itemCount + 1 } : folder));
+      } else {
+        setFavoritedFolderIds((current) => current.filter((id) => id !== folderId));
+        setFolders((current) => current.map((folder) => folder.id === folderId ? { ...folder, itemCount: Math.max(0, folder.itemCount - 1) } : folder));
+      }
+      console.error("[watch] 保存收藏失败", error);
+    } finally {
+      setFavoriteBusyId(null);
     }
   }
 
@@ -91,8 +109,48 @@ export default function WatchPage() {
     const name = newFolderName.trim();
     if (!name) return;
     const response = await postJson<{ id: string; name: string; createdAt: string }>("/me/favorites/folders", { name });
-    setFolders((current) => [...current, { id: response.id, name: response.name, itemCount: 0, createdAt: response.createdAt, updatedAt: response.createdAt }]);
+    setFolders((current) => [...current, { id: response.id, name: response.name, itemCount: 1, createdAt: response.createdAt, updatedAt: response.createdAt }]);
+    setFavoritedFolderIds((current) => current.includes(response.id) ? current : [...current, response.id]);
     setNewFolderName("");
+    try {
+      await postJson(`/items/${params.id}/favorites`, { folderId: response.id });
+    } catch (error) {
+      setFolders((current) => current.map((folder) => folder.id === response.id ? { ...folder, itemCount: 0 } : folder));
+      setFavoritedFolderIds((current) => current.filter((id) => id !== response.id));
+      console.error("[watch] 保存新收藏夹失败", error);
+    }
+  }
+
+  function applyTags(tags: ItemDetail["tagDetails"]) {
+    setDetail((current) => current ? { ...current, tags: tags.map((tag) => tag.name), tagDetails: tags } : current);
+  }
+
+  async function addTag(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = tagDraft.trim();
+    if (!name) return;
+    setTagBusy("add");
+    try {
+      const response = await postJson<{ tags: ItemDetail["tagDetails"] }>(`/items/${params.id}/tags`, { name });
+      applyTags(response.tags);
+      setTagDraft("");
+    } catch (error) {
+      console.error("[watch] 添加标签失败", error);
+    } finally {
+      setTagBusy(null);
+    }
+  }
+
+  async function removeTag(tagId: string) {
+    setTagBusy(tagId);
+    try {
+      const response = await deleteJson<{ tags: ItemDetail["tagDetails"] }>(`/items/${params.id}/tags/${tagId}`);
+      applyTags(response.tags);
+    } catch (error) {
+      console.error("[watch] 删除标签失败", error);
+    } finally {
+      setTagBusy(null);
+    }
   }
 
   async function submitComment(event: FormEvent<HTMLFormElement>) {
@@ -104,6 +162,7 @@ export default function WatchPage() {
   }
 
   const activePart = detail?.parts[activePartIndex];
+  const tagDetails = detail?.tagDetails ?? [];
 
   return (
     <AppShell wide>
@@ -121,39 +180,59 @@ export default function WatchPage() {
             <section className="border-b border-white/8 py-5">
               <h1 className="text-xl font-semibold leading-8 md:text-2xl">{detail.item.title}</h1>
               <p className="mt-1 text-sm text-white/45">{detail.item.creatorName}{detail.item.creatorAlias ? ` · ${detail.item.creatorAlias}` : ""} · {detail.item.categoryName}</p>
-              <div className="mt-4 flex items-center gap-2">
-                <button className={`action-button ${reaction === "like" ? "active" : ""}`} onClick={() => void toggleReaction("like")}><ThumbsUp size={18} fill={reaction === "like" ? "currentColor" : "none"} /> 喜欢</button>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <button className={`action-button bili-action ${reaction === "like" ? "active" : ""}`} onClick={() => void toggleReaction("like")}><ThumbsUp size={19} fill={reaction === "like" ? "currentColor" : "none"} /> 喜欢</button>
                 <button className={`action-button ${reaction === "dislike" ? "active" : ""}`} onClick={() => void toggleReaction("dislike")}><ThumbsDown size={18} fill={reaction === "dislike" ? "currentColor" : "none"} /> 不喜欢</button>
-                <button className={`action-button ${coined ? "active" : ""}`} onClick={() => void toggleCoin()}><Coins size={18} fill={coined ? "currentColor" : "none"} /> 投币</button>
-                <details className="relative">
-                  <summary className={`action-button cursor-pointer list-none ${favoritedFolderIds.length > 0 ? "active" : ""}`} aria-label="收藏"><Bookmark size={18} fill={favoritedFolderIds.length > 0 ? "currentColor" : "none"} /> 收藏</summary>
-                  <div className="absolute right-0 top-11 z-20 w-64 rounded-xl border border-white/10 bg-[#1a1c22] p-2 shadow-2xl">
-                    <div className="max-h-64 space-y-0.5 overflow-y-auto">
-                      {folders.length === 0 ? (
-                        <p className="px-3 py-3 text-sm text-white/40">还没有收藏夹，点击下方新建。</p>
-                      ) : folders.map((folder) => {
-                        const active = favoritedFolderIds.includes(folder.id);
-                        return (
-                          <button key={folder.id} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-white/72 transition hover:bg-white/8 hover:text-white" onClick={() => void toggleFavorite(folder.id)}>
-                            <Bookmark size={15} className={active ? "text-[var(--accent)]" : "text-white/35"} fill={active ? "currentColor" : "none"} />
-                            <span className="flex-1 truncate">{folder.name}</span>
-                            <span className="text-xs text-white/35">{folder.itemCount}</span>
-                          </button>
-                        );
-                      })}
+                <button className={`action-button bili-action ${coined ? "active" : ""}`} onClick={() => void toggleCoin()}><CircleDollarSign size={19} fill={coined ? "currentColor" : "none"} /> 投币</button>
+                <div className="relative">
+                  <button className={`action-button bili-action ${favoritedFolderIds.length > 0 ? "active" : ""}`} onClick={() => setFavoritePanelOpen((open) => !open)} aria-expanded={favoritePanelOpen} aria-label="收藏"><Star size={19} fill={favoritedFolderIds.length > 0 ? "currentColor" : "none"} /> 收藏</button>
+                  {favoritePanelOpen ? (
+                    <div className="absolute right-0 top-11 z-20 w-72 rounded-lg border border-white/10 bg-[#1a1c22] p-2 shadow-2xl">
+                      <div className="max-h-64 space-y-1 overflow-y-auto">
+                        {folders.length === 0 ? (
+                          <p className="px-3 py-3 text-sm text-white/40">还没有收藏夹</p>
+                        ) : folders.map((folder) => {
+                          const active = favoritedFolderIds.includes(folder.id);
+                          return (
+                            <button key={folder.id} disabled={favoriteBusyId === folder.id} className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm text-white/76 transition hover:bg-white/8 hover:text-white disabled:opacity-45" onClick={() => void toggleFavorite(folder.id)}>
+                              <span className={`grid h-5 w-5 shrink-0 place-items-center rounded border ${active ? "border-[var(--accent)] bg-[var(--accent)] text-black" : "border-white/18 text-transparent"}`}>
+                                <Check size={14} strokeWidth={3} />
+                              </span>
+                              <span className="min-w-0 flex-1 truncate">{folder.name}</span>
+                              <span className="font-mono text-xs text-white/35">{folder.itemCount}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <form className="mt-2 flex gap-1.5 border-t border-white/8 pt-2" onSubmit={(event) => { event.preventDefault(); void createFolder(); }}>
+                        <input value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} className="field min-w-0 flex-1 text-sm" placeholder="新建收藏夹…" maxLength={50} />
+                        <button type="submit" className="secondary-button shrink-0 !px-2.5 !py-1.5"><Plus size={15} />新建</button>
+                      </form>
                     </div>
-                    <form className="mt-1.5 flex gap-1.5 border-t border-white/8 pt-1.5" onSubmit={(event) => { event.preventDefault(); void createFolder(); }}>
-                      <input value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} className="field min-w-0 flex-1 text-sm" placeholder="新建收藏夹…" maxLength={50} />
-                      <button type="submit" className="secondary-button shrink-0 !px-2.5 !py-1.5">新建</button>
-                    </form>
-                  </div>
-                </details>
+                  ) : null}
+                </div>
                 <details className="relative ml-auto">
                   <summary className="icon-button cursor-pointer list-none" aria-label="更多操作"><MoreHorizontal size={19} /></summary>
                   <div className="absolute right-0 top-11 z-20 w-44 rounded-xl border border-white/10 bg-[#1a1c22] p-1.5 shadow-2xl">
                     <button className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-white/70 hover:bg-white/8 hover:text-white" onClick={() => void toggleBlacklist()}><Ban size={17} />{blacklisted ? "取消屏蔽该 UP" : "屏蔽该 UP"}</button>
                   </div>
                 </details>
+              </div>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                {tagDetails.map((tag) => (
+                  <span key={tag.id} className={`group inline-flex min-h-8 items-center gap-1.5 rounded-full border px-3 text-xs transition ${tag.source === "manual" ? "border-[rgba(94,234,212,.35)] bg-[rgba(94,234,212,.1)] text-[var(--accent)]" : "border-white/8 bg-white/[.045] text-white/50"}`}>
+                    #{tag.name}
+                    <button disabled={tagBusy === tag.id} className="grid h-5 w-5 place-items-center rounded-full text-white/35 opacity-70 transition hover:bg-white/10 hover:text-white disabled:opacity-30 md:opacity-0 md:group-hover:opacity-100" onClick={() => void removeTag(tag.id)} aria-label={`删除标签 ${tag.name}`}>
+                      <X size={13} />
+                    </button>
+                  </span>
+                ))}
+                <form className="inline-flex min-h-8 items-center gap-1.5 rounded-full border border-white/8 bg-white/[.035] px-2" onSubmit={addTag}>
+                  <input value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} className="w-24 bg-transparent text-xs text-white/76 outline-none placeholder:text-white/32" placeholder="添加标签" maxLength={40} />
+                  <button disabled={tagBusy === "add"} className="grid h-5 w-5 place-items-center rounded-full text-[var(--accent)] transition hover:bg-white/10 disabled:opacity-35" aria-label="添加标签">
+                    <Plus size={13} strokeWidth={2.4} />
+                  </button>
+                </form>
               </div>
             </section>
 

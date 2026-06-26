@@ -34,8 +34,10 @@ type MediaItemInput = {
   structureStatus: StructureStatus;
 };
 
-type TagsIndex = Record<string, string[]>;
+type TagIndexEntry = string[] | { add?: string[]; remove?: string[] };
+type TagsIndex = Record<string, TagIndexEntry>;
 type ScanContext = { seenItemIds: Set<string> };
+export type ItemTag = { id: string; name: string; source: "scan" | "manual"; sortOrder: number };
 type InfoJson = {
   title?: string;
   date?: string;
@@ -750,20 +752,73 @@ function getOrCreateCreator(db: SqliteDatabase, categoryId: string, name: string
 }
 
 function applyTags(db: SqliteDatabase, itemId: string, rootPath: string, targetPath: string, tagsIndex: TagsIndex) {
+  const tags = resolveTags(rootPath, targetPath, tagsIndex);
+
+  db.prepare("DELETE FROM media_tags WHERE media_item_id = ?").run(itemId);
+
+  const timestamp = nowIso();
+  for (const tag of tags) {
+    const tagId = getOrCreateTag(db, tag.name);
+    db.prepare(`
+      INSERT OR IGNORE INTO media_tags (media_item_id, tag_id, source, sort_order, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(itemId, tagId, tag.source, tag.sortOrder, timestamp);
+  }
+}
+
+function resolveTags(rootPath: string, targetPath: string, tagsIndex: TagsIndex): { name: string; source: "scan" | "manual"; sortOrder: number }[] {
   const relativePath = targetPath.startsWith(rootPath)
     ? normalizeRelative(relative(rootPath, targetPath))
     : normalizeRelative(targetPath);
   const withoutExtension = relativePath.replace(/\.[^.]+$/, "");
   const segments = withoutExtension.split("/");
   const keys = [segments[0], segments.slice(0, 2).join("/"), withoutExtension, relativePath].filter(Boolean);
-  const tagNames = [...new Set(keys.flatMap((key) => tagsIndex[key] ?? []))];
+  const tags = new Map<string, { name: string; source: "scan" | "manual"; sortOrder: number }>();
+  const removed = new Set<string>();
 
-  db.prepare("DELETE FROM media_tags WHERE media_item_id = ?").run(itemId);
+  for (const key of keys) {
+    const entry = tagsIndex[key];
+    if (!entry) continue;
+    if (Array.isArray(entry)) {
+      for (const name of entry) {
+        addResolvedTag(tags, removed, name, "scan");
+      }
+      continue;
+    }
 
-  for (const tagName of tagNames) {
-    const tagId = getOrCreateTag(db, tagName);
-    db.prepare("INSERT OR IGNORE INTO media_tags (media_item_id, tag_id) VALUES (?, ?)").run(itemId, tagId);
+    for (const name of entry.remove ?? []) {
+      const normalized = normalizeTagName(name);
+      if (!normalized) continue;
+      const key = tagKey(normalized);
+      removed.add(key);
+      tags.delete(key);
+    }
+    for (const name of entry.add ?? []) {
+      addResolvedTag(tags, removed, name, "manual");
+    }
   }
+
+  return Array.from(tags.values()).map((tag, sortOrder) => ({ ...tag, sortOrder }));
+}
+
+function addResolvedTag(
+  tags: Map<string, { name: string; source: "scan" | "manual"; sortOrder: number }>,
+  removed: Set<string>,
+  rawName: string,
+  source: "scan" | "manual"
+) {
+  const name = normalizeTagName(rawName);
+  if (!name) return;
+  const key = tagKey(name);
+  if (removed.has(key)) return;
+  const existing = tags.get(key);
+  if (existing) {
+    if (source === "manual") {
+      existing.source = "manual";
+    }
+    return;
+  }
+  tags.set(key, { name, source, sortOrder: tags.size });
 }
 
 function replaceParts(db: SqliteDatabase, itemId: string, videos: string[], info: InfoJson) {
@@ -884,6 +939,124 @@ function readTagsIndex(rootPath: string): TagsIndex {
   } catch {
     return {};
   }
+}
+
+export function listItemTags(itemId: string): ItemTag[] {
+  const db = getSqlite();
+  return db.prepare(`
+    SELECT t.id, t.name, mt.source, mt.sort_order AS sortOrder
+    FROM media_tags mt
+    JOIN tags t ON t.id = mt.tag_id
+    WHERE mt.media_item_id = ?
+    ORDER BY CASE mt.source WHEN 'manual' THEN 0 ELSE 1 END, mt.sort_order ASC, t.name ASC
+  `).all(itemId) as ItemTag[];
+}
+
+export function addManualTagToItem(itemId: string, rawName: string): ItemTag[] {
+  const name = normalizeTagName(rawName);
+  if (!name) {
+    throw new Error("Invalid tag name");
+  }
+  const row = findItemStorageTarget(itemId);
+  updateTagsFile(row.root_path, row.source_path, (entry) => {
+    const add = [name, ...entry.add.filter((item) => item !== name)];
+    return {
+      add,
+      remove: entry.remove.filter((item) => item !== name)
+    };
+  });
+  syncStoredTagsForItem(itemId);
+  return listItemTags(itemId);
+}
+
+export function removeTagFromItem(itemId: string, tagId: string): ItemTag[] {
+  const db = getSqlite();
+  const tag = db.prepare("SELECT name FROM tags WHERE id = ?").get(tagId) as { name: string } | undefined;
+  if (!tag) {
+    throw new Error("Tag not found");
+  }
+  const name = normalizeTagName(tag.name);
+  if (!name) {
+    throw new Error("Invalid tag name");
+  }
+  const row = findItemStorageTarget(itemId);
+  updateTagsFile(row.root_path, row.source_path, (entry) => ({
+    add: entry.add.filter((item) => item !== name),
+    remove: [name, ...entry.remove.filter((item) => item !== name)]
+  }));
+  syncStoredTagsForItem(itemId);
+  return listItemTags(itemId);
+}
+
+function syncStoredTagsForItem(itemId: string) {
+  const db = getSqlite();
+  const row = findItemStorageTarget(itemId);
+  applyTags(db, itemId, row.root_path, row.source_path, readTagsIndex(row.root_path));
+  pruneOrphanTags(db);
+}
+
+function findItemStorageTarget(itemId: string) {
+  const db = getSqlite();
+  const row = db.prepare(`
+    SELECT mi.source_path, l.root_path
+    FROM media_items mi
+    JOIN libraries l ON l.id = mi.library_id
+    WHERE mi.id = ?
+  `).get(itemId) as { source_path: string; root_path: string } | undefined;
+  if (!row) {
+    throw new Error("Item not found");
+  }
+  return row;
+}
+
+function updateTagsFile(
+  rootPath: string,
+  sourcePath: string,
+  update: (entry: { add: string[]; remove: string[] }) => { add: string[]; remove: string[] }
+) {
+  const path = join(rootPath, "_tags.json");
+  const index = readTagsIndex(rootPath);
+  const key = normalizeRelative(relative(rootPath, sourcePath));
+  const current = index[key];
+  const normalized = normalizeTagIndexEntry(current);
+  const next = update(normalized);
+  index[key] = {
+    add: uniqueTags(next.add),
+    remove: uniqueTags(next.remove)
+  };
+  writeFileSync(path, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+}
+
+function normalizeTagIndexEntry(entry: TagIndexEntry | undefined) {
+  if (!entry) return { add: [] as string[], remove: [] as string[] };
+  if (Array.isArray(entry)) {
+    return { add: uniqueTags(entry), remove: [] as string[] };
+  }
+  return {
+    add: uniqueTags(entry.add ?? []),
+    remove: uniqueTags(entry.remove ?? [])
+  };
+}
+
+function uniqueTags(values: string[]) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const name = normalizeTagName(value);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    result.push(name);
+  }
+  return result;
+}
+
+function normalizeTagName(value: string) {
+  const normalized = value.trim().replace(/\s+/g, " ").slice(0, 40);
+  return normalized.length > 0 ? normalized : null;
+}
+
+function tagKey(value: string) {
+  return value.toLocaleLowerCase("zh-CN");
 }
 
 function readInfo(folderPath: string): InfoJson {

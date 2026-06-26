@@ -2,7 +2,7 @@ export const videoExtensions = [".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi",
 export const imageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"] as const;
 
 export type MediaKind = "video" | "image" | "post";
-export type InteractionKind = "like" | "dislike" | "watch" | "finish" | "blacklist_up" | "coin";
+export type InteractionKind = "like" | "dislike" | "watch" | "finish" | "blacklist_up" | "coin" | "favorite";
 export type StructureStatus = "standard" | "fallback";
 export type ThumbnailStatus = "pending" | "ready" | "failed";
 export type ScanStatus = "queued" | "running" | "complete" | "failed";

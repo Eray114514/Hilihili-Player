@@ -161,6 +161,7 @@ export type ItemDetail = {
   parts: PartDetail[];
   images: ItemImage[];
   tags: string[];
+  tagDetails: { id: string; name: string; source: "scan" | "manual"; sortOrder: number }[];
   comments: { id: string; body: string; atSeconds: number | null; createdAt: string }[];
   related: FeedItem[];
   favoritedFolderIds: string[];

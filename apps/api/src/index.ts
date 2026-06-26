@@ -5,7 +5,7 @@ import { basename, extname, isAbsolute, join, relative, resolve, sep } from "nod
 import { platform } from "node:os";
 import { lookup } from "mime-types";
 import { createId, getSqlite, nowIso } from "@hilihili/db";
-import { enqueueScan } from "@hilihili/media";
+import { addManualTagToItem, enqueueScan, listItemTags, removeTagFromItem } from "@hilihili/media";
 import { getFeedItemsByIds, getRecommendedFeed } from "@hilihili/recommendation";
 import type { DirectoryEntry, FeedItem, InteractionKind } from "@hilihili/shared";
 
@@ -48,6 +48,10 @@ type FavoriteFolderBody = {
 
 type FavoriteItemBody = {
   folderId?: string;
+};
+
+type TagBody = {
+  name?: string;
 };
 
 const app = Fastify({ logger: true });
@@ -418,15 +422,32 @@ app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
     thumbnailUrl: `/media/images/${image.id}/thumbnail`,
     originalUrl: `/media/images/${image.id}/original`
   }));
-  const tags = db.prepare(`
-    SELECT t.name FROM media_tags mt JOIN tags t ON t.id = mt.tag_id
-    WHERE mt.media_item_id = ? ORDER BY t.name ASC
-  `).all(request.params.id) as { name: string }[];
+  const tagDetails = listItemTags(request.params.id);
   const related = getRecommendedFeed({ limit: 12, seed: request.params.id, includeFinished: false, excludeId: request.params.id });
   const favoritedFolderIds = db.prepare("SELECT folder_id AS folderId FROM favorites WHERE item_id = ?")
     .all(request.params.id).map((row: any) => row.folderId);
 
-  return { item, parts: partsWithSubtitles, images: imageAssets, tags: tags.map((tag) => tag.name), comments, related, favoritedFolderIds };
+  return { item, parts: partsWithSubtitles, images: imageAssets, tags: tagDetails.map((tag) => tag.name), tagDetails, comments, related, favoritedFolderIds };
+});
+
+app.post<{ Params: { id: string }; Body: TagBody }>("/items/:id/tags", async (request, reply) => {
+  try {
+    const tags = addManualTagToItem(request.params.id, request.body.name ?? "");
+    return reply.code(201).send({ tags });
+  } catch (error) {
+    return reply.code(error instanceof Error && error.message === "Item not found" ? 404 : 400)
+      .send({ error: error instanceof Error ? error.message : "Unable to add tag" });
+  }
+});
+
+app.delete<{ Params: { id: string; tagId: string } }>("/items/:id/tags/:tagId", async (request, reply) => {
+  try {
+    const tags = removeTagFromItem(request.params.id, request.params.tagId);
+    return { tags };
+  } catch (error) {
+    return reply.code(error instanceof Error && (error.message === "Item not found" || error.message === "Tag not found") ? 404 : 400)
+      .send({ error: error instanceof Error ? error.message : "Unable to remove tag" });
+  }
 });
 
 app.get<{ Params: { id: string; variant: string } }>("/media/images/:id/:variant", async (request, reply) => {
@@ -494,13 +515,16 @@ app.put<{ Params: { id: string }; Body: { reaction?: "like" | "dislike" | null }
   if (request.body.reaction !== null && request.body.reaction !== "like" && request.body.reaction !== "dislike") {
     return reply.code(400).send({ error: "Invalid reaction" });
   }
+  const timestamp = nowIso();
   if (request.body.reaction === null) {
-    db.prepare("DELETE FROM item_preferences WHERE item_id = ?").run(request.params.id);
+    db.prepare("UPDATE item_preferences SET reaction = NULL, updated_at = ? WHERE item_id = ?").run(timestamp, request.params.id);
+    db.prepare("DELETE FROM item_preferences WHERE item_id = ? AND reaction IS NULL AND coined = 0").run(request.params.id);
   } else {
     db.prepare(`
       INSERT INTO item_preferences (item_id, reaction, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(item_id) DO UPDATE SET reaction = excluded.reaction, updated_at = excluded.updated_at
-    `).run(request.params.id, request.body.reaction, nowIso());
+    `).run(request.params.id, request.body.reaction, timestamp);
+    recordRecommendationSignals(request.params.id, request.body.reaction, 1, timestamp);
   }
   return { reaction: request.body.reaction ?? null };
 });
@@ -513,26 +537,12 @@ app.put<{ Params: { id: string }; Body: Record<string, never> | undefined }>("/i
   const nextCoined = current?.coined ? 0 : 1;
   const timestamp = nowIso();
   db.prepare(`
-    INSERT INTO item_preferences (item_id, reaction, coined, coined_at, updated_at) VALUES (?, NULL, ?, ?, ?)
+    INSERT INTO item_preferences (item_id, coined, coined_at, updated_at) VALUES (?, ?, ?, ?)
     ON CONFLICT(item_id) DO UPDATE SET coined = excluded.coined, coined_at = excluded.coined_at, updated_at = excluded.updated_at
   `).run(itemId, nextCoined, nextCoined ? timestamp : null, timestamp);
 
   if (nextCoined === 1) {
-    const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(itemId) as
-      | { id: string; creator_id: string | null; category_id: string | null }
-      | undefined;
-    if (item) {
-      db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(createId("int"), "item", itemId, "coin", 1, timestamp);
-      if (item.creator_id) {
-        db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-          .run(createId("int"), "creator", item.creator_id, "coin", 1, timestamp);
-      }
-      if (item.category_id) {
-        db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-          .run(createId("int"), "category", item.category_id, "coin", 1, timestamp);
-      }
-    }
+    recordRecommendationSignals(itemId, "coin", 1, timestamp);
   }
 
   return { coined: Boolean(nextCoined) };
@@ -713,10 +723,13 @@ app.post<{ Params: { id: string }; Body: FavoriteItemBody }>("/items/:id/favorit
 
   const favoriteId = createId("fav");
   const createdAt = nowIso();
-  db.prepare(`
+  const result = db.prepare(`
     INSERT INTO favorites (id, folder_id, item_id, created_at) VALUES (?, ?, ?, ?)
     ON CONFLICT(folder_id, item_id) DO NOTHING
   `).run(favoriteId, folderId, itemId, createdAt);
+  if (result.changes > 0) {
+    recordRecommendationSignals(itemId, "favorite", 1, createdAt);
+  }
   return reply.code(201).send({ folderId, favorited: true });
 });
 
@@ -750,6 +763,41 @@ app.delete<{ Params: { id: string } }>("/items/:id/watch-progress", async (reque
   db.prepare("DELETE FROM watch_progress WHERE item_id = ?").run(request.params.id);
   return { ok: true };
 });
+
+function recordRecommendationSignals(itemId: string, kind: InteractionKind, value: number, timestamp = nowIso()) {
+  const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(itemId) as
+    | { id: string; creator_id: string | null; category_id: string | null }
+    | undefined;
+  if (!item) return;
+
+  insertInteraction("item", itemId, kind, value, timestamp);
+  if (item.creator_id && (kind === "like" || kind === "dislike" || kind === "coin" || kind === "favorite")) {
+    insertInteraction("creator", item.creator_id, kind, value, timestamp);
+  }
+  if (item.category_id && (kind === "like" || kind === "dislike" || kind === "coin" || kind === "favorite")) {
+    insertInteraction("category", item.category_id, kind, value, timestamp);
+  }
+
+  const tags = db.prepare(`
+    SELECT tag_id AS tagId, source, sort_order AS sortOrder
+    FROM media_tags WHERE media_item_id = ?
+    ORDER BY CASE source WHEN 'manual' THEN 0 ELSE 1 END, sort_order ASC
+  `).all(itemId) as { tagId: string; source: "scan" | "manual"; sortOrder: number }[];
+  for (const tag of tags) {
+    insertInteraction("tag", tag.tagId, kind, value * tagSignalMultiplier(tag.source, tag.sortOrder), timestamp);
+  }
+}
+
+function insertInteraction(targetType: "item" | "creator" | "category" | "tag", targetId: string, kind: InteractionKind, value: number, timestamp: string) {
+  db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(createId("int"), targetType, targetId, kind, value, timestamp);
+}
+
+function tagSignalMultiplier(source: "scan" | "manual", sortOrder: number) {
+  const sourceBoost = source === "manual" ? 1.75 : 1;
+  const positionBoost = Math.max(0.45, 1 - Math.max(0, sortOrder) * 0.08);
+  return sourceBoost * positionBoost;
+}
 
 const host = process.env.HILI_API_HOST ?? "0.0.0.0";
 const port = Number(process.env.HILI_API_PORT ?? 4141);

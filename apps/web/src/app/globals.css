@@ -97,6 +97,8 @@ textarea {
 .action-button { display: inline-flex; align-items: center; gap: .45rem; border-radius: .6rem; padding: .55rem .75rem; color: rgba(255,255,255,.58); font-size: .875rem; transition: 160ms ease; }
 .action-button:hover { background: rgba(255,255,255,.06); color: white; }
 .action-button.active { background: var(--accent-soft); color: var(--accent); }
+.bili-action { min-width: 5.25rem; justify-content: center; font-weight: 650; }
+.bili-action.active { color: #00aeec; background: rgba(0,174,236,.12); }
 
 .side-tab { border-radius: .55rem; padding: .55rem; font-size: .875rem; color: rgba(255,255,255,.48); transition: 160ms ease; }
 .side-tab:hover { color: white; }

@@ -160,13 +160,13 @@ function interactionWeight(db: ReturnType<typeof getSqlite>, targetType: string,
 
 function tagInteractionWeight(db: ReturnType<typeof getSqlite>, itemId: string) {
   const rows = db.prepare(`
-    SELECT i.kind, i.value, i.created_at
+    SELECT i.kind, i.value, i.created_at, mt.source, mt.sort_order AS sortOrder
     FROM media_tags mt
     JOIN interactions i ON i.target_type = 'tag' AND i.target_id = mt.tag_id
     WHERE mt.media_item_id = ?
-  `).all(itemId) as { kind: string; value: number; created_at: string }[];
+  `).all(itemId) as { kind: string; value: number; created_at: string; source: "scan" | "manual"; sortOrder: number }[];
 
-  return rows.reduce((score, row) => score + kindWeight(row.kind, row.value, row.created_at), 0);
+  return rows.reduce((score, row) => score + kindWeight(row.kind, row.value, row.created_at) * tagPlacementWeight(row.source, row.sortOrder), 0);
 }
 
 function kindWeight(kind: string, value: number, createdAt: string) {
@@ -175,6 +175,8 @@ function kindWeight(kind: string, value: number, createdAt: string) {
   switch (kind) {
     case "coin":
       return value * 4 * decay;
+    case "favorite":
+      return value * 2.4 * decay;
     case "like":
       return value * 2 * decay;
     case "finish":
@@ -186,6 +188,12 @@ function kindWeight(kind: string, value: number, createdAt: string) {
     default:
       return 0;
   }
+}
+
+function tagPlacementWeight(source: "scan" | "manual", sortOrder: number) {
+  const sourceBoost = source === "manual" ? 1.7 : 1;
+  const positionBoost = Math.max(0.45, 1 - Math.max(0, sortOrder) * 0.08);
+  return sourceBoost * positionBoost;
 }
 
 function diversityRerank(scored: { row: CandidateRow; score: number }[]): { row: CandidateRow; score: number }[] {

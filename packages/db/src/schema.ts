@@ -124,7 +124,10 @@ export const mediaTags = sqliteTable(
   "media_tags",
   {
     mediaItemId: text("media_item_id").notNull().references(() => mediaItems.id),
-    tagId: text("tag_id").notNull().references(() => tags.id)
+    tagId: text("tag_id").notNull().references(() => tags.id),
+    source: text("source", { enum: ["scan", "manual"] }).notNull().default("scan"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: text("created_at")
   },
   (table) => ({
     byPair: uniqueIndex("media_tags_pair_idx").on(table.mediaItemId, table.tagId)
@@ -137,7 +140,7 @@ export const interactions = sqliteTable(
     id: text("id").primaryKey(),
     targetType: text("target_type", { enum: ["item", "creator", "category", "tag"] }).notNull(),
     targetId: text("target_id").notNull(),
-    kind: text("kind", { enum: ["like", "dislike", "watch", "finish", "blacklist_up", "coin"] }).notNull(),
+    kind: text("kind", { enum: ["like", "dislike", "watch", "finish", "blacklist_up", "coin", "favorite"] }).notNull(),
     value: real("value").notNull().default(1),
     createdAt: text("created_at").notNull()
   },

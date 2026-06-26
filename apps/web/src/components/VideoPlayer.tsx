@@ -50,7 +50,8 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const [hoverTime, setHoverTime] = useState<number | null>(null);
   const [hoverRatio, setHoverRatio] = useState(0);
   const [hoverLeftPx, setHoverLeftPx] = useState(0);
-  const [spriteLoaded, setSpriteLoaded] = useState(false);
+  const [loadedSpriteUrl, setLoadedSpriteUrl] = useState<string | null>(null);
+  const [failedSpriteUrl, setFailedSpriteUrl] = useState<string | null>(null);
   const [prevPartId, setPrevPartId] = useState<string | null>(null);
   const [mediaError, setMediaError] = useState(false);
 
@@ -94,6 +95,27 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     };
   }, [part]);
 
+  useEffect(() => {
+    if (!spriteUrl) return;
+    let ignore = false;
+    const image = new window.Image();
+    image.onload = () => {
+      if (!ignore) setLoadedSpriteUrl(spriteUrl);
+    };
+    image.onerror = () => {
+      if (!ignore) setFailedSpriteUrl(spriteUrl);
+    };
+    image.src = spriteUrl;
+    return () => {
+      ignore = true;
+      image.onload = null;
+      image.onerror = null;
+    };
+  }, [spriteUrl]);
+
+  const spriteLoaded = !!spriteUrl && loadedSpriteUrl === spriteUrl;
+  const spriteError = !!spriteUrl && failedSpriteUrl === spriteUrl;
+
   if (part && part.id !== prevPartId) {
     setPrevPartId(part.id);
     setBuffering(true);
@@ -102,7 +124,6 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     setDuration(0);
     setAutoPlayBlocked(false);
     setHoverTime(null);
-    setSpriteLoaded(false);
     setMediaError(false);
     setSubtitleTracks(new Map());
     setSubtitleCues({ primary: null, secondary: null });
@@ -551,32 +572,27 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
             </div>
           ) : null}
           <div
-            className="pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--accent)] shadow-md ring-2 ring-black/40 transition-transform group-hover/progress:scale-125"
+            className="pointer-events-none absolute top-1/2 h-[10px] w-[10px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--accent)] shadow-md ring-[1.5px] ring-black/45 transition-transform group-hover/progress:scale-110"
             style={{ left: `${progressPct}%` }}
           />
 
-          {hoverTime != null && spriteUrl && spriteInfo && hoverTileIndex >= 0 ? (
+          {hoverTime != null && spriteUrl && spriteInfo && hoverTileIndex >= 0 && !spriteError ? (
             <div
               className="pointer-events-none absolute -top-2 -translate-x-1/2 -translate-y-full overflow-hidden rounded-lg border border-white/15 bg-black shadow-2xl"
               style={{ left: hoverLeftPx }}
             >
               <div
-                className="relative"
-                style={{ width: spriteInfo.thumbW, height: spriteInfo.thumbH }}
+                className="relative overflow-hidden bg-black"
+                style={{
+                  width: spriteInfo.thumbW,
+                  height: spriteInfo.thumbH,
+                  backgroundImage: spriteLoaded ? `url("${spriteUrl}")` : undefined,
+                  backgroundPosition: `${previewBgX}px ${previewBgY}px`,
+                  backgroundRepeat: "no-repeat",
+                  backgroundSize: `${spriteInfo.thumbW * spriteInfo.cols}px ${spriteInfo.thumbH * spriteInfo.rows}px`
+                }}
               >
                 {spriteLoaded ? null : <div className="absolute inset-0 animate-pulse bg-white/10" />}
-                <img
-                  src={spriteUrl}
-                  alt=""
-                  onLoad={() => setSpriteLoaded(true)}
-                  className="absolute"
-                  style={{
-                    width: `${spriteInfo.thumbW * spriteInfo.cols}px`,
-                    height: `${spriteInfo.thumbH * spriteInfo.rows}px`,
-                    left: previewBgX,
-                    top: previewBgY
-                  }}
-                />
               </div>
               <div className="bg-black/80 px-2 py-1 text-center text-xs font-medium tabular-nums text-white/90">
                 {formatTime(hoverTime)}
