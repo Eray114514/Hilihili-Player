@@ -116,7 +116,7 @@ function migrate(db: Database.Database) {
     CREATE TABLE IF NOT EXISTS media_tags (
       media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
       tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-      source TEXT NOT NULL DEFAULT 'scan',
+      source TEXT NOT NULL DEFAULT 'legacy',
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT,
       UNIQUE(media_item_id, tag_id)
@@ -238,9 +238,10 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "watch_progress", "completed_at", "TEXT");
   ensureColumn(db, "item_preferences", "coined", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "item_preferences", "coined_at", "TEXT");
-  ensureColumn(db, "media_tags", "source", "TEXT NOT NULL DEFAULT 'scan'");
+  ensureColumn(db, "media_tags", "source", "TEXT NOT NULL DEFAULT 'legacy'");
   ensureColumn(db, "media_tags", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "media_tags", "created_at", "TEXT");
+  db.prepare("UPDATE media_tags SET source = 'legacy' WHERE source IN ('scan', 'manual')").run();
   ensureColumn(db, "creator_preferences", "followed", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "creator_preferences", "followed_at", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS media_items_library_relative_idx ON media_items(library_id, relative_path)");

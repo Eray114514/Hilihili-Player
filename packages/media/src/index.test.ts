@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 const sandbox = mkdtempSync(join(tmpdir(), "hilihili-media-test-"));
 process.env.HILI_DATA_DIR = join(sandbox, "data");
-const [{ createId, getSqlite, nowIso }, { resolveContentDate, scanLibrary }] = await Promise.all([
+const [{ createId, getSqlite, nowIso }, { addManualTagToItem, resolveContentDate, scanLibrary }] = await Promise.all([
   import("@hilihili/db"),
   import("./index.js")
 ]);
@@ -85,6 +85,66 @@ test("scanner creates posts, galleries and stable playable items", async () => {
   rmSync(movedVideo);
   assert.equal(await scanLibrary(libraryId), 3);
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_items").get() as { count: number }).count, 3, "deleted files must be removed from the index");
+});
+
+test("scanner prefers local layered tags and keeps the root index as a fallback", async () => {
+  const root = join(sandbox, "layered-tags-library");
+  const localCreator = join(root, "科技", "本地UP");
+  const localItem = join(localCreator, "本地UP_内容.mp4");
+  const legacyCreator = join(root, "生活", "旧UP");
+  const legacyItem = join(legacyCreator, "旧UP_内容.mp4");
+  mkdirSync(localCreator, { recursive: true });
+  mkdirSync(legacyCreator, { recursive: true });
+  writeFileSync(join(root, "科技", "info.json"), JSON.stringify({ tags: ["本地分区"] }));
+  writeFileSync(join(localCreator, "info.json"), JSON.stringify({ tags: ["本地UP"] }));
+  writeFileSync(join(localCreator, "本地UP_内容.info.json"), JSON.stringify({ tags: { add: ["本地内容"], remove: ["本地分区"] } }));
+  writeFileSync(localItem, "local-video");
+  writeFileSync(legacyItem, "legacy-video");
+  writeFileSync(join(root, "_tags.json"), JSON.stringify({
+    "科技": ["旧分区"],
+    "科技/本地UP": ["旧UP标签"],
+    "科技/本地UP/本地UP_内容": ["旧内容"],
+    "生活": ["遗留分区"],
+    "生活/旧UP": ["遗留UP"],
+    "生活/旧UP/旧UP_内容": ["遗留内容"]
+  }));
+
+  const db = getSqlite();
+  const libraryId = createId("lib");
+  db.prepare("INSERT INTO libraries (id, name, root_path, enabled, created_at) VALUES (?, ?, ?, 1, ?)").run(libraryId, "分层标签测试库", root, nowIso());
+  assert.equal(await scanLibrary(libraryId), 2);
+
+  const localTags = db.prepare(`
+    SELECT t.name, mt.source
+    FROM media_tags mt JOIN tags t ON t.id = mt.tag_id
+    JOIN media_items mi ON mi.id = mt.media_item_id
+    WHERE mi.library_id = ? AND mi.source_path = ?
+    ORDER BY t.name
+  `).all(libraryId, localItem) as { name: string; source: string }[];
+  assert.deepEqual(localTags, [
+    { name: "本地UP", source: "creator" },
+    { name: "本地内容", source: "content" }
+  ]);
+
+  const legacyTags = db.prepare(`
+    SELECT t.name, mt.source, mi.id AS itemId
+    FROM media_tags mt JOIN tags t ON t.id = mt.tag_id
+    JOIN media_items mi ON mi.id = mt.media_item_id
+    WHERE mi.library_id = ? AND mi.source_path = ?
+    ORDER BY t.name
+  `).all(libraryId, legacyItem) as { name: string; source: string; itemId: string }[];
+  const legacyOnly = legacyTags.filter((tag) => tag.name.startsWith("遗留"));
+  assert.deepEqual(legacyOnly.map(({ name, source }) => ({ name, source })), [
+    { name: "遗留UP", source: "legacy" },
+    { name: "遗留内容", source: "legacy" },
+    { name: "遗留分区", source: "legacy" }
+  ]);
+
+  const legacyItemId = legacyOnly[0]?.itemId;
+  assert.ok(legacyItemId);
+  assert.deepEqual(addManualTagToItem(legacyItemId, "新增内容").map((tag) => tag.name), ["新增内容", "遗留内容", "遗留分区", "遗留UP"]);
+  const sidecar = JSON.parse(readFileSync(join(legacyCreator, "旧UP_内容.info.json"), "utf8")) as { tags: { add: string[] } };
+  assert.deepEqual(sidecar.tags.add, ["新增内容", "遗留内容"]);
 });
 
 test("scanner replaces legacy child parts when grouping a folder", async () => {

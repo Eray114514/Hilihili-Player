@@ -901,8 +901,8 @@ function recordRecommendationSignals(itemId: string, kind: InteractionKind, valu
   const tags = db.prepare(`
     SELECT tag_id AS tagId, source, sort_order AS sortOrder
     FROM media_tags WHERE media_item_id = ?
-    ORDER BY CASE source WHEN 'manual' THEN 0 ELSE 1 END, sort_order ASC
-  `).all(itemId) as { tagId: string; source: "scan" | "manual"; sortOrder: number }[];
+    ORDER BY CASE source WHEN 'content' THEN 0 WHEN 'creator' THEN 1 WHEN 'category' THEN 2 ELSE 3 END, sort_order ASC
+  `).all(itemId) as { tagId: string; source: "legacy" | "category" | "creator" | "content"; sortOrder: number }[];
   for (const tag of tags) {
     insertInteraction("tag", tag.tagId, kind, value * tagSignalMultiplier(tag.source, tag.sortOrder), timestamp);
   }
@@ -913,8 +913,8 @@ function insertInteraction(targetType: "item" | "creator" | "category" | "tag", 
     .run(createId("int"), targetType, targetId, kind, value, timestamp);
 }
 
-function tagSignalMultiplier(source: "scan" | "manual", sortOrder: number) {
-  const sourceBoost = source === "manual" ? 1.75 : 1;
+function tagSignalMultiplier(source: "legacy" | "category" | "creator" | "content", sortOrder: number) {
+  const sourceBoost = source === "content" ? 1.75 : source === "creator" ? 1.2 : source === "category" ? 0.8 : 1;
   const positionBoost = Math.max(0.45, 1 - Math.max(0, sortOrder) * 0.08);
   return sourceBoost * positionBoost;
 }

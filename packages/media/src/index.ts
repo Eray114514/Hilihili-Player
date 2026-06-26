@@ -37,8 +37,9 @@ type MediaItemInput = {
 
 type TagIndexEntry = string[] | { add?: string[]; remove?: string[] };
 type TagsIndex = Record<string, TagIndexEntry>;
+type TagSource = "legacy" | "category" | "creator" | "content";
 type ScanContext = { seenItemIds: Set<string> };
-export type ItemTag = { id: string; name: string; source: "scan" | "manual"; sortOrder: number };
+export type ItemTag = { id: string; name: string; source: TagSource; sortOrder: number };
 type InfoJson = {
   title?: string;
   date?: string;
@@ -49,6 +50,7 @@ type InfoJson = {
   banner?: string;
   p_titles?: Record<string, string>;
   hidden?: boolean;
+  tags?: TagIndexEntry;
 };
 
 const SUBTITLE_EXTS = [".srt", ".vtt"];
@@ -818,22 +820,35 @@ function applyTags(db: SqliteDatabase, itemId: string, rootPath: string, targetP
   }
 }
 
-function resolveTags(rootPath: string, targetPath: string, tagsIndex: TagsIndex): { name: string; source: "scan" | "manual"; sortOrder: number }[] {
+function resolveTags(rootPath: string, targetPath: string, tagsIndex: TagsIndex): { name: string; source: TagSource; sortOrder: number }[] {
   const relativePath = targetPath.startsWith(rootPath)
     ? normalizeRelative(relative(rootPath, targetPath))
     : normalizeRelative(targetPath);
   const withoutExtension = relativePath.replace(/\.[^.]+$/, "");
   const segments = withoutExtension.split("/");
-  const keys = [segments[0], segments.slice(0, 2).join("/"), withoutExtension, relativePath].filter(Boolean);
-  const tags = new Map<string, { name: string; source: "scan" | "manual"; sortOrder: number }>();
+  const local = readLocalTagDefinitions(rootPath, targetPath, segments);
+  const layers: { entry: TagIndexEntry | undefined; source: TagSource }[] = [
+    { entry: local.category ?? tagsIndex[segments[0]], source: local.category ? "category" : "legacy" },
+    { entry: local.creator ?? tagsIndex[segments.slice(0, 2).join("/")], source: local.creator ? "creator" : "legacy" }
+  ];
+
+  if (local.content) {
+    layers.push({ entry: local.content, source: "content" });
+  } else {
+    layers.push(
+      { entry: tagsIndex[withoutExtension], source: "legacy" },
+      { entry: tagsIndex[relativePath], source: "legacy" }
+    );
+  }
+
+  const tags = new Map<string, { name: string; source: TagSource; sortOrder: number }>();
   const removed = new Set<string>();
 
-  for (const key of keys) {
-    const entry = tagsIndex[key];
+  for (const { entry, source } of layers) {
     if (!entry) continue;
     if (Array.isArray(entry)) {
       for (const name of entry) {
-        addResolvedTag(tags, removed, name, "scan");
+        addResolvedTag(tags, removed, name, source);
       }
       continue;
     }
@@ -846,18 +861,38 @@ function resolveTags(rootPath: string, targetPath: string, tagsIndex: TagsIndex)
       tags.delete(key);
     }
     for (const name of entry.add ?? []) {
-      addResolvedTag(tags, removed, name, "manual");
+      addResolvedTag(tags, removed, name, source);
     }
   }
 
   return Array.from(tags.values()).map((tag, sortOrder) => ({ ...tag, sortOrder }));
 }
 
+function readLocalTagDefinitions(rootPath: string, targetPath: string, segments: string[]) {
+  if (!targetPath.startsWith(rootPath)) return {};
+  const category = segments.length >= 2 ? readTagDefinition(readInfo(join(rootPath, segments[0]))) : undefined;
+  const creator = segments.length >= 3 ? readTagDefinition(readInfo(join(rootPath, segments[0], segments[1]))) : undefined;
+  const content = safeStat(targetPath)?.isDirectory()
+    ? readTagDefinition(readInfo(targetPath))
+    : readTagDefinition(readFileSidecar(targetPath));
+  return { category, creator, content };
+}
+
+function readTagDefinition(info: InfoJson): TagIndexEntry | undefined {
+  const entry = info.tags;
+  if (Array.isArray(entry)) return entry.filter((value): value is string => typeof value === "string");
+  if (!entry || typeof entry !== "object") return undefined;
+  return {
+    add: Array.isArray(entry.add) ? entry.add.filter((value): value is string => typeof value === "string") : [],
+    remove: Array.isArray(entry.remove) ? entry.remove.filter((value): value is string => typeof value === "string") : []
+  };
+}
+
 function addResolvedTag(
-  tags: Map<string, { name: string; source: "scan" | "manual"; sortOrder: number }>,
+  tags: Map<string, { name: string; source: TagSource; sortOrder: number }>,
   removed: Set<string>,
   rawName: string,
-  source: "scan" | "manual"
+  source: TagSource
 ) {
   const name = normalizeTagName(rawName);
   if (!name) return;
@@ -865,9 +900,7 @@ function addResolvedTag(
   if (removed.has(key)) return;
   const existing = tags.get(key);
   if (existing) {
-    if (source === "manual") {
-      existing.source = "manual";
-    }
+    existing.source = source;
     return;
   }
   tags.set(key, { name, source, sortOrder: tags.size });
@@ -1044,7 +1077,7 @@ export function listItemTags(itemId: string): ItemTag[] {
     FROM media_tags mt
     JOIN tags t ON t.id = mt.tag_id
     WHERE mt.media_item_id = ?
-    ORDER BY CASE mt.source WHEN 'manual' THEN 0 ELSE 1 END, mt.sort_order ASC, t.name ASC
+    ORDER BY CASE mt.source WHEN 'content' THEN 0 WHEN 'creator' THEN 1 WHEN 'category' THEN 2 ELSE 3 END, mt.sort_order ASC, t.name ASC
   `).all(itemId) as ItemTag[];
 }
 
@@ -1054,7 +1087,7 @@ export function addManualTagToItem(itemId: string, rawName: string): ItemTag[] {
     throw new Error("Invalid tag name");
   }
   const row = findItemStorageTarget(itemId);
-  updateTagsFile(row.root_path, row.source_path, (entry) => {
+  updateTagsMetadata(row.root_path, row.source_path, (entry) => {
     const add = [name, ...entry.add.filter((item) => item !== name)];
     return {
       add,
@@ -1076,7 +1109,7 @@ export function removeTagFromItem(itemId: string, tagId: string): ItemTag[] {
     throw new Error("Invalid tag name");
   }
   const row = findItemStorageTarget(itemId);
-  updateTagsFile(row.root_path, row.source_path, (entry) => ({
+  updateTagsMetadata(row.root_path, row.source_path, (entry) => ({
     add: entry.add.filter((item) => item !== name),
     remove: [name, ...entry.remove.filter((item) => item !== name)]
   }));
@@ -1105,22 +1138,34 @@ function findItemStorageTarget(itemId: string) {
   return row;
 }
 
-function updateTagsFile(
+function updateTagsMetadata(
   rootPath: string,
   sourcePath: string,
   update: (entry: { add: string[]; remove: string[] }) => { add: string[]; remove: string[] }
 ) {
-  const path = join(rootPath, "_tags.json");
-  const index = readTagsIndex(rootPath);
-  const key = normalizeRelative(relative(rootPath, sourcePath));
-  const current = index[key];
+  const path = tagMetadataPath(sourcePath);
+  const info = readInfoFile(path);
+  const current = readTagDefinition(info) ?? readLegacyContentEntry(rootPath, sourcePath);
   const normalized = normalizeTagIndexEntry(current);
   const next = update(normalized);
-  index[key] = {
+  const tags = {
     add: uniqueTags(next.add),
     remove: uniqueTags(next.remove)
   };
-  writeFileSync(path, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  writeFileSync(path, `${JSON.stringify({ ...info, tags }, null, 2)}\n`, "utf8");
+}
+
+function tagMetadataPath(sourcePath: string) {
+  if (safeStat(sourcePath)?.isDirectory()) return join(sourcePath, "info.json");
+  const extension = extname(sourcePath);
+  return `${sourcePath.slice(0, -extension.length)}.info.json`;
+}
+
+function readLegacyContentEntry(rootPath: string, sourcePath: string): TagIndexEntry | undefined {
+  const index = readTagsIndex(rootPath);
+  const relativePath = normalizeRelative(relative(rootPath, sourcePath));
+  const withoutExtension = relativePath.replace(/\.[^.]+$/, "");
+  return index[relativePath] ?? index[withoutExtension];
 }
 
 function normalizeTagIndexEntry(entry: TagIndexEntry | undefined) {
@@ -1634,14 +1679,9 @@ export async function createDemoLibrary(rootPath: string) {
   const hidden = join(root, "生活", "彩色UP", "[2026-06-17] 隐藏演示");
   [multipart, covered, purePost, videoPost, imagePool, hidden].forEach((path) => mkdirSync(path, { recursive: true }));
 
-  writeFileSync(join(root, "科技", "演示UP", "info.json"), JSON.stringify({ alias: "DemoCreator", description: "演示多分 P、视频动态与特别关注消息的测试 UP。" }, null, 2));
+  writeFileSync(join(root, "科技", "info.json"), JSON.stringify({ tags: ["演示"] }, null, 2));
+  writeFileSync(join(root, "科技", "演示UP", "info.json"), JSON.stringify({ alias: "DemoCreator", description: "演示多分 P、视频动态与特别关注消息的测试 UP。", tags: ["科技", "测试"] }, null, 2));
   writeFileSync(join(root, "摄影", "图片UP", "info.json"), JSON.stringify({ alias: "PhotoUP", description: "把图片、图文和一点颜色收进镜头里的 UP。" }, null, 2));
-  writeFileSync(join(root, "_tags.json"), JSON.stringify({
-    "科技": ["演示"],
-    "科技/演示UP": ["科技", "测试"],
-    "科技/演示UP/260623 带视频动态": ["图文", "配套视频"],
-    "摄影/图片UP": ["摄影"]
-  }, null, 2));
 
   writeFileSync(join(multipart, "info.json"), JSON.stringify({
     title: "多分P交互演示",
@@ -1659,6 +1699,7 @@ export async function createDemoLibrary(rootPath: string) {
     .jpeg({ quality: 88 }).toFile(join(covered, "cover.jpg"));
   writeFileSync(join(purePost, "post.txt"), "最近整理了一组用于演示图文动态的配图。这里会保留完整文案、九宫格顺序和原图浏览体验。", "utf8");
   writeFileSync(join(videoPost, "post.txt"), "这是一条带配套视频的动态：首页可以刷到视频，播放页只显示简介，完整图片仍然留在原动态里。", "utf8");
+  writeFileSync(join(videoPost, "info.json"), JSON.stringify({ tags: ["图文", "配套视频"] }, null, 2));
   writeFileSync(join(hidden, "info.json"), JSON.stringify({ title: "不应出现在信息流", date: "2026-06-17", hidden: true }, null, 2));
   await makeDemoVideo(join(videoPost, "P1.mp4"), "testsrc=size=1280x720:rate=30", 10);
   await makeDemoVideo(join(hidden, "P1.mp4"), "color=c=gray:size=1280x720:rate=30", 4);

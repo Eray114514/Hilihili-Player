@@ -132,7 +132,7 @@ export const mediaTags = sqliteTable(
   {
     mediaItemId: text("media_item_id").notNull().references(() => mediaItems.id),
     tagId: text("tag_id").notNull().references(() => tags.id),
-    source: text("source", { enum: ["scan", "manual"] }).notNull().default("scan"),
+    source: text("source", { enum: ["legacy", "category", "creator", "content"] }).notNull().default("legacy"),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: text("created_at")
   },

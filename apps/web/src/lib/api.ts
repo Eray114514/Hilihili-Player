@@ -175,7 +175,7 @@ export type ItemDetail = {
   parts: PartDetail[];
   images: ItemImage[];
   tags: string[];
-  tagDetails: { id: string; name: string; source: "scan" | "manual"; sortOrder: number }[];
+  tagDetails: { id: string; name: string; source: "legacy" | "category" | "creator" | "content"; sortOrder: number }[];
   comments: { id: string; body: string; atSeconds: number | null; createdAt: string }[];
   related: FeedItem[];
   favoritedFolderIds: string[];
