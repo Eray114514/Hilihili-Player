@@ -211,6 +211,8 @@ function ProfileMenu() {
   const [open, setOpen] = useState(false);
   const [hovering, setHovering] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Track the latest pointer type so we can ignore synthesized mouse events on touch devices.
   const lastPointerType = useRef<PointerEvent["pointerType"]>("mouse");
 
@@ -225,17 +227,48 @@ function ProfileMenu() {
     { href: "/settings", label: "设置与媒体库", icon: Settings }
   ];
 
+  const clearMenuTimers = () => {
+    if (openTimerRef.current) {
+      clearTimeout(openTimerRef.current);
+      openTimerRef.current = null;
+    }
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  };
+
+  const openMenu = (delay = 60) => {
+    clearMenuTimers();
+    openTimerRef.current = setTimeout(() => {
+      setOpen(true);
+      openTimerRef.current = null;
+    }, delay);
+  };
+
+  const closeMenu = (delay = 180) => {
+    clearMenuTimers();
+    closeTimerRef.current = setTimeout(() => {
+      setOpen(false);
+      setHovering(false);
+      closeTimerRef.current = null;
+    }, delay);
+  };
+
   // Close on outside pointerdown while open.
   useEffect(() => {
     if (!open) return;
     const handler = (event: PointerEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        clearMenuTimers();
         setOpen(false);
       }
     };
     document.addEventListener("pointerdown", handler);
     return () => document.removeEventListener("pointerdown", handler);
   }, [open]);
+
+  useEffect(() => () => clearMenuTimers(), []);
 
   const handlePointerDown = (event: React.PointerEvent) => {
     lastPointerType.current = event.pointerType;
@@ -245,27 +278,30 @@ function ProfileMenu() {
     // Ignore synthesized mouse events on touch devices.
     if (lastPointerType.current !== "mouse") return;
     setHovering(true);
-    setOpen(true);
+    openMenu();
   };
 
   const handleMouseLeave = () => {
     if (lastPointerType.current !== "mouse") return;
-    setHovering(false);
-    setOpen(false);
+    closeMenu();
   };
 
-  const handleFocus = () => setOpen(true);
+  const handleFocus = () => {
+    clearMenuTimers();
+    setOpen(true);
+  };
 
   const handleBlur = (event: React.FocusEvent<HTMLDivElement>) => {
     // Only close if focus is leaving the container entirely.
     if (!event.currentTarget.contains(event.relatedTarget as Node)) {
-      setOpen(false);
+      closeMenu(0);
     }
   };
 
   const handleAvatarClick = () => {
     // On desktop, hover already opened the menu — don't toggle-close on click.
     if (hovering) return;
+    clearMenuTimers();
     setOpen((prev) => !prev);
   };
 
@@ -284,28 +320,29 @@ function ProfileMenu() {
         onClick={handleAvatarClick}
         aria-label="打开个人菜单"
         aria-expanded={open}
-        className="grid h-10 w-10 place-items-center rounded-full outline-none ring-offset-2 ring-offset-[#0d0f14] transition hover:ring-1 hover:ring-white/20 focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        className="grid h-10 w-10 place-items-center rounded-full outline-none ring-offset-2 ring-offset-[#0d0f14] transition-[transform,filter] duration-150 ease-out hover:scale-[1.08] hover:brightness-110 focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
       >
-        <span className="grid h-10 w-10 place-items-center overflow-hidden rounded-full bg-[linear-gradient(145deg,#87f5df_0%,#36bfa9_52%,#6957d9_100%)] font-black text-[#07110f] shadow-lg shadow-teal-950/30 ring-1 ring-white/15">
+        <span className="grid h-10 w-10 place-items-center overflow-hidden rounded-full bg-[linear-gradient(145deg,#87f5df_0%,#36bfa9_52%,#6957d9_100%)] font-black text-[#07110f] shadow-md shadow-teal-950/25 ring-1 ring-white/18">
           H
         </span>
       </button>
+      {open ? <span className="absolute right-0 top-10 h-3 w-20" aria-hidden="true" /> : null}
       <AnimatePresence>
         {open && (
           <motion.div
-            initial={{ opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-            className="absolute right-0 top-12 z-50 w-64 overflow-hidden rounded-2xl border border-white/10 bg-[#171920] p-2 shadow-2xl shadow-black/50"
+            initial={{ opacity: 0, y: -3, scale: 0.985 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -2, scale: 0.992 }}
+            transition={{ duration: 0.12, ease: [0.2, 0, 0, 1] }}
+            className="absolute right-0 top-12 z-50 w-64 origin-top-right overflow-hidden rounded-xl border border-white/10 bg-[#171920] p-1.5 shadow-[0_14px_36px_rgba(0,0,0,.38)]"
           >
-            <div className="mb-2 rounded-xl bg-[linear-gradient(135deg,rgba(94,234,212,.14),rgba(105,87,217,.12))] p-3">
-              <div className="font-semibold">本地观众 H</div>
-              <p className="mt-1 text-xs leading-5 text-white/45">一只住在局域网里的小电视，替你记住看到哪一 P。</p>
+            <div className="mb-1.5 rounded-lg bg-white/[0.055] p-3">
+              <div className="font-semibold leading-5">本地观众 H</div>
+              <p className="mt-1 text-xs leading-5 text-white/45">局域网观影记录会保留在这里。</p>
             </div>
             {menuItems.map((item) => {
               const Icon = item.icon;
-              return <Link key={item.href} href={item.href} className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-white/68 transition hover:bg-white/7 hover:text-white"><Icon size={17} /><span>{item.label}</span><ChevronRight className="ml-auto text-white/25" size={15} /></Link>;
+              return <Link key={item.href} href={item.href} className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-white/68 transition-colors duration-100 hover:bg-white/8 hover:text-white"><Icon size={17} /><span>{item.label}</span><ChevronRight className="ml-auto text-white/25" size={15} /></Link>;
             })}
           </motion.div>
         )}

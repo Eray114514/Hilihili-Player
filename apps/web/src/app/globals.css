@@ -49,6 +49,29 @@ textarea {
 .nav-link:hover { background: rgba(255,255,255,.06); color: white; }
 .nav-link.active { background: var(--accent-soft); color: var(--accent); }
 
+.channel-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  min-height: 2rem;
+  border-radius: .5rem;
+  background: rgba(255, 255, 255, .06);
+  padding: .4rem .75rem;
+  color: rgba(255, 255, 255, .72);
+  font-size: .875rem;
+  transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+}
+.channel-pill:hover { background: rgba(255, 255, 255, .11); color: white; }
+.channel-pill.active { background: white; color: #080a0f; }
+.channel-count {
+  border-radius: .35rem;
+  background: rgba(0, 0, 0, .22);
+  padding: .05rem .35rem;
+  font-size: .68rem;
+  color: currentColor;
+  opacity: .7;
+}
+
 .icon-button:hover {
   background: rgba(255, 255, 255, 0.12);
   color: white;
@@ -219,6 +242,7 @@ textarea {
 .secondary-button:active,
 .icon-button:active,
 .nav-link:active,
+.channel-pill:active,
 .player-btn:active,
 .filter-group button:active,
 .side-tab:active,

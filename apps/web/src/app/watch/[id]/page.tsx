@@ -173,7 +173,7 @@ export default function WatchPage() {
   return (
     <AppShell wide>
       {!detail ? <WatchSkeleton /> : (
-        <motion.div variants={fadeIn} initial="hidden" animate="visible" className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <motion.div variants={fadeIn} initial="hidden" animate="visible" className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
           <main className="min-w-0">
             <VideoPlayer
               itemId={detail.item.id}
@@ -183,10 +183,10 @@ export default function WatchPage() {
               onEnded={() => { if (activePartIndex < detail.parts.length - 1) setActivePartIndex((value) => value + 1); }}
             />
 
-            <section className="border-b border-white/8 py-5">
+            <section className="border-b border-white/8 py-4">
               <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
                 <div className="min-w-0"><h1 className="text-xl font-semibold leading-8 md:text-2xl">{detail.item.title}</h1><div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-white/42"><Link href={detail.item.category_id ? `/category/${detail.item.category_id}` : "#"} className="hover:text-[var(--accent)]">{detail.item.categoryName}</Link><span>·</span><time>{formatDate(detail.item.content_published_at ?? detail.item.file_modified_at ?? detail.item.first_seen_at)}</time>{detail.parts.length > 1 ? <><span>·</span><span>{detail.parts.length} P</span></> : null}</div></div>
-                <Link href={detail.item.creator_id ? `/creator/${detail.item.creator_id}` : "#"} className="flex shrink-0 items-center gap-2.5 rounded-xl border border-white/8 bg-white/[0.03] p-2 pr-3 transition hover:border-[rgba(94,234,212,.28)] hover:bg-white/[0.055]"><CreatorAvatar creatorId={null} name={detail.item.creatorName} avatarUrl={detail.item.creatorAvatarUrl} size="sm" /><span className="min-w-0"><span className="block max-w-44 truncate text-sm font-semibold text-white/88">{detail.item.creatorName}</span>{detail.item.creatorAlias ? <span className="block max-w-44 truncate text-xs text-white/42">{detail.item.creatorAlias}</span> : <span className="block text-xs text-white/38">UP 主</span>}</span></Link>
+                <Link href={detail.item.creator_id ? `/creator/${detail.item.creator_id}` : "#"} className="flex shrink-0 items-center gap-2.5 rounded-lg p-1.5 pr-2.5 transition hover:bg-white/[0.055]"><CreatorAvatar creatorId={null} name={detail.item.creatorName} avatarUrl={detail.item.creatorAvatarUrl} size="sm" /><span className="min-w-0"><span className="block max-w-44 truncate text-sm font-semibold text-white/88">{detail.item.creatorName}</span>{detail.item.creatorAlias ? <span className="block max-w-44 truncate text-xs text-white/42">{detail.item.creatorAlias}</span> : <span className="block text-xs text-white/38">UP 主</span>}</span></Link>
               </div>
               <div className="mt-4 flex flex-wrap items-center gap-2">
                 <button className={`action-button bili-action ${reaction === "like" ? "active" : ""}`} onClick={() => void toggleReaction("like")}><motion.span className="inline-flex" variants={pop} initial={false} animate={reaction === "like" ? "pop" : "rest"}><ThumbsUp size={19} fill={reaction === "like" ? "currentColor" : "none"} /></motion.span> 喜欢</button>
@@ -259,12 +259,12 @@ export default function WatchPage() {
             </section>
           </main>
 
-          <aside className="overflow-hidden rounded-xl border border-white/8 bg-white/[0.025] lg:sticky lg:top-20">
-            <div className="grid grid-cols-2 border-b border-white/8 p-1.5">
+          <aside className="overflow-hidden border-t border-white/8 pt-3 lg:sticky lg:top-20 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+            <div className="grid grid-cols-2 border-b border-white/8 p-1">
               <button className={`side-tab ${sideTab === "parts" ? "active" : ""}`} onClick={() => setSideTab("parts")}>选集 {detail.parts.length > 1 ? detail.parts.length : ""}</button>
               <button className={`side-tab ${sideTab === "related" ? "active" : ""}`} onClick={() => setSideTab("related")}>相关推荐</button>
             </div>
-            <div className="max-h-[calc(100vh-9rem)] space-y-1 overflow-y-auto p-2">
+            <div className="max-h-[calc(100vh-9rem)] space-y-1 overflow-y-auto py-2">
               {sideTab === "parts" ? detail.parts.map((part, index) => (
                 <button key={part.id} className={`flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm transition ${index === activePartIndex ? "bg-[var(--accent-soft)] text-[var(--accent)]" : "text-white/68 hover:bg-white/6 hover:text-white"}`} onClick={() => setActivePartIndex(index)}>
                   <span className="w-8 shrink-0 font-mono text-xs text-white/35">P{part.partIndex}</span><span className="line-clamp-2">{part.title}</span>
