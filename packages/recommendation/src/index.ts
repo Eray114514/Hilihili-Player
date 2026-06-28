@@ -255,8 +255,8 @@ function diversityRerank(scored: { row: CandidateRow; score: number }[]): { row:
 
 function toFeedItem(db: ReturnType<typeof getSqlite>, row: CandidateRow, score: number): FeedItem {
   const previewImages = db.prepare(`
-    SELECT id, width, height FROM media_images WHERE item_id = ? ORDER BY sort_index ASC LIMIT 9
-  `).all(row.id) as { id: string; width: number | null; height: number | null }[];
+    SELECT id, width, height, is_animated FROM media_images WHERE item_id = ? ORDER BY sort_index ASC LIMIT 9
+  `).all(row.id) as { id: string; width: number | null; height: number | null; is_animated: number | null }[];
   const imageCount = (db.prepare("SELECT COUNT(*) AS count FROM media_images WHERE item_id = ?").get(row.id) as { count: number }).count;
   return {
     id: row.id,
@@ -277,10 +277,12 @@ function toFeedItem(db: ReturnType<typeof getSqlite>, row: CandidateRow, score: 
     imageCount,
     previewImages: previewImages.map((image) => ({
       ...image,
+      isAnimated: Boolean(image.is_animated),
       thumbnailUrl: `/media/images/${image.id}/thumbnail`,
       originalUrl: `/media/images/${image.id}/original`
     })),
     partCount: row.part_count,
+    coverIsAnimated: row.kind === "image" && previewImages[0] ? Boolean(previewImages[0].is_animated) : false,
     score
   };
 }

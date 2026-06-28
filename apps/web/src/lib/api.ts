@@ -119,6 +119,9 @@ export type ItemImage = {
   sortIndex: number;
   width: number | null;
   height: number | null;
+  isAnimated: boolean;
+  frameCount: number | null;
+  durationMs: number | null;
   thumbnailUrl: string;
   originalUrl: string;
 };

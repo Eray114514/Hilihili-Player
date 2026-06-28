@@ -231,6 +231,7 @@ function FavoriteCard({
             <Bookmark size={30} />
           </div>
         )}
+        {item.coverIsAnimated ? <span className="absolute left-1.5 top-1.5 rounded bg-black/72 px-1.5 py-0.5 text-[11px] font-medium text-white/88 backdrop-blur-sm">动图</span> : null}
       </Link>
       <div className="min-w-0 flex-1">
         <Link href={href} className="line-clamp-2 font-medium leading-6 hover:text-[var(--accent)]">

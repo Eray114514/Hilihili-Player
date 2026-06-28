@@ -1397,32 +1397,49 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
   }
 
   const imageRows = db.prepare(`
-    SELECT mimg.id, mimg.path, mimg.fingerprint, mimg.thumbnail_path
+    SELECT mimg.id, mimg.path, mimg.fingerprint, mimg.thumbnail_path, mimg.is_animated
     FROM media_images mimg
     JOIN media_items mi ON mi.id = mimg.item_id
     WHERE mi.library_id IN (${placeholders})
-  `).all(...libraryIds) as { id: string; path: string; fingerprint: string; thumbnail_path: string | null }[];
+  `).all(...libraryIds) as { id: string; path: string; fingerprint: string; thumbnail_path: string | null; is_animated: number | null }[];
   for (const image of imageRows) {
     try {
       if (!existsSync(image.path)) continue;
-      const metadata = await sharp(image.path, { animated: false }).metadata();
-      const thumbnailPath = image.thumbnail_path && existsSync(image.thumbnail_path)
-        ? image.thumbnail_path
-        : await generateImageThumbnail(image.path, image.fingerprint);
-      db.prepare("UPDATE media_images SET width = ?, height = ?, thumbnail_path = ? WHERE id = ?")
-        .run(metadata.width ?? null, metadata.height ?? null, thumbnailPath, image.id);
+      const meta = await sharp(image.path, { animated: true }).metadata();
+      const isAnimated = (meta.pages ?? 1) > 1;
+      const frameCount = isAnimated ? (meta.pages ?? null) : null;
+      const durationMs = isAnimated && Array.isArray(meta.delay) ? meta.delay.reduce((sum, d) => sum + (d || 0), 0) : null;
+      // needsRegen: no thumbnail, OR row never processed by new code (is_animated IS NULL) and is animated (old thumbnail is static)
+      const needsRegen = !image.thumbnail_path || !existsSync(image.thumbnail_path)
+        || (image.is_animated === null && isAnimated);
+      let thumbnailPath = image.thumbnail_path;
+      if (needsRegen) {
+        // invalidate cached static webp so generateImageThumbnail doesn't skip via existsSync
+        const cachedPath = join(getAppMediaCacheDir(), `${image.fingerprint}.image.webp`);
+        if (existsSync(cachedPath)) {
+          try { unlinkSync(cachedPath); } catch { /* ignore */ }
+        }
+        thumbnailPath = await generateImageThumbnail(image.path, image.fingerprint, isAnimated);
+      }
+      db.prepare("UPDATE media_images SET width = ?, height = ?, thumbnail_path = ?, is_animated = ?, frame_count = ?, duration_ms = ? WHERE id = ?")
+        .run(meta.width ?? null, meta.height ?? null, thumbnailPath, isAnimated ? 1 : 0, frameCount, durationMs, image.id);
     } catch {
       // Keep the original available even when thumbnail generation fails.
     }
   }
 }
 
-async function generateImageThumbnail(imagePath: string, fingerprint: string) {
+async function generateImageThumbnail(imagePath: string, fingerprint: string, isAnimated = false) {
   const cacheDir = getAppMediaCacheDir();
   mkdirSync(cacheDir, { recursive: true });
   const outputPath = join(cacheDir, `${fingerprint}.image.webp`);
   if (!existsSync(outputPath)) {
-    await sharp(imagePath, { animated: false }).rotate().resize({ width: 720, height: 720, fit: "inside", withoutEnlargement: true }).webp({ quality: 80 }).toFile(outputPath);
+    const pipe = sharp(imagePath, { animated: isAnimated }).rotate().resize({ width: 720, height: 720, fit: "inside", withoutEnlargement: true });
+    if (isAnimated) {
+      await pipe.webp({ quality: 80, effort: 4 }).toFile(outputPath);
+    } else {
+      await pipe.webp({ quality: 80 }).toFile(outputPath);
+    }
   }
   return outputPath;
 }
@@ -1711,6 +1728,9 @@ export async function createDemoLibrary(rootPath: string) {
     if (index < 3) await sharp(Buffer.from(svg)).webp({ quality: 82 }).toFile(join(imagePool, `图片 ${index + 1}.webp`));
     if (index < 2) await sharp(Buffer.from(svg)).jpeg({ quality: 84 }).toFile(join(videoPost, `${index + 1}.jpg`));
   }
+  // Animated image samples (GIF + animated WebP) to exercise the 动图 pipeline end-to-end.
+  await makeDemoAnimatedImage(join(imagePool, "动图1.gif"), "testsrc2=size=480x270:rate=10", 2, "gif");
+  await makeDemoAnimatedImage(join(imagePool, "动图2.webp"), "smptebars=size=480x270:rate=10", 2, "libwebp");
   return root;
 }
 
@@ -1732,6 +1752,20 @@ async function makeDemoVideo(path: string, source: string, duration: number) {
     "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", String(duration),
     "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-y", path
   ]);
+}
+
+async function makeDemoAnimatedImage(path: string, source: string, duration: number, encoder: "gif" | "libwebp") {
+  if (existsSync(path)) {
+    return;
+  }
+  const args = ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", source, "-t", String(duration), "-vf", "scale=480:-1:flags=lanczos", "-loop", "0"];
+  if (encoder === "gif") {
+    args.push("-c:v", "gif");
+  } else {
+    args.push("-c:v", "libwebp");
+  }
+  args.push("-y", path);
+  await runProcess(getFfmpegPath(), args);
 }
 
 function normalizeRelative(value: string) {

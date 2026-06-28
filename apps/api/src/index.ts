@@ -471,11 +471,12 @@ app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
   const comments = db.prepare("SELECT id, body, at_seconds AS atSeconds, created_at AS createdAt FROM comments WHERE item_id = ? ORDER BY created_at DESC")
     .all(request.params.id);
   const images = db.prepare(`
-    SELECT id, sort_index AS sortIndex, width, height
+    SELECT id, sort_index AS sortIndex, width, height, is_animated AS isAnimated, frame_count AS frameCount, duration_ms AS durationMs
     FROM media_images WHERE item_id = ? ORDER BY sort_index ASC
-  `).all(request.params.id) as { id: string; sortIndex: number; width: number | null; height: number | null }[];
+  `).all(request.params.id) as { id: string; sortIndex: number; width: number | null; height: number | null; isAnimated: number | null; frameCount: number | null; durationMs: number | null }[];
   const imageAssets = images.map((image) => ({
     ...image,
+    isAnimated: Boolean(image.isAnimated),
     thumbnailUrl: `/media/images/${image.id}/thumbnail`,
     originalUrl: `/media/images/${image.id}/original`
   }));
@@ -525,12 +526,24 @@ app.get<{ Params: { id: string; variant: string } }>("/media/images/:id/:variant
 });
 
 app.get<{ Params: { id: string } }>("/media/items/:id/cover", async (request, reply) => {
-  const row = db.prepare("SELECT cover_path, generated_cover_path FROM media_items WHERE id = ?").get(request.params.id) as
-    | { cover_path: string | null; generated_cover_path: string | null }
+  const row = db.prepare("SELECT kind, cover_path, generated_cover_path FROM media_items WHERE id = ?").get(request.params.id) as
+    | { kind: string; cover_path: string | null; generated_cover_path: string | null }
     | undefined;
-  const coverPath = row?.cover_path && existsSync(row.cover_path)
-    ? row.cover_path
-    : row?.generated_cover_path && existsSync(row.generated_cover_path) ? row.generated_cover_path : null;
+  let coverPath: string | null = null;
+  // For pure image galleries, serve the first image's (animated) thumbnail instead of the
+  // original — much lighter on the feed and preserves animation for animated images.
+  if (row?.kind === "image") {
+    const img = db.prepare("SELECT thumbnail_path, path FROM media_images WHERE item_id = ? ORDER BY sort_index ASC LIMIT 1")
+      .get(request.params.id) as { thumbnail_path: string | null; path: string } | undefined;
+    if (img) {
+      coverPath = img.thumbnail_path && existsSync(img.thumbnail_path) ? img.thumbnail_path : (existsSync(img.path) ? img.path : null);
+    }
+  }
+  if (!coverPath) {
+    coverPath = row?.cover_path && existsSync(row.cover_path)
+      ? row.cover_path
+      : row?.generated_cover_path && existsSync(row.generated_cover_path) ? row.generated_cover_path : null;
+  }
   if (!coverPath) {
     return reply.code(404).send({ error: "Cover not found" });
   }

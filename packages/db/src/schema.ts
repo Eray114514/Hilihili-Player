@@ -86,7 +86,10 @@ export const mediaImages = sqliteTable(
     width: integer("width"),
     height: integer("height"),
     fingerprint: text("fingerprint").notNull(),
-    thumbnailPath: text("thumbnail_path")
+    thumbnailPath: text("thumbnail_path"),
+    isAnimated: integer("is_animated", { mode: "boolean" }),
+    frameCount: integer("frame_count"),
+    durationMs: integer("duration_ms")
   },
   (table) => ({
     byItem: index("media_images_item_idx").on(table.itemId),

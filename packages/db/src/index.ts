@@ -235,6 +235,9 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "media_parts", "stream_size_bytes", "INTEGER");
   ensureColumn(db, "media_parts", "compatibility_status", "TEXT NOT NULL DEFAULT 'pending'");
   ensureColumn(db, "media_parts", "compatibility_error", "TEXT");
+  ensureColumn(db, "media_images", "is_animated", "INTEGER");
+  ensureColumn(db, "media_images", "frame_count", "INTEGER");
+  ensureColumn(db, "media_images", "duration_ms", "INTEGER");
   ensureColumn(db, "creators", "alias", "TEXT");
   ensureColumn(db, "creators", "description", "TEXT");
   ensureColumn(db, "creators", "avatar_path", "TEXT");

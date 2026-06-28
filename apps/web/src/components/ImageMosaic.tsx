@@ -17,6 +17,7 @@ export function ImageMosaic({ images, total = images.length, href, onSelect }: {
         const tile = (
           <>
             <ApiImage src={assetUrl(image.thumbnailUrl) ?? ""} alt={`第 ${index + 1} 张图片`} fill sizes="(min-width: 768px) 380px, 33vw" className="object-cover transition duration-300 group-hover:scale-[1.025]" />
+            {image.isAnimated ? <span className="absolute left-1.5 top-1.5 rounded bg-black/72 px-1.5 py-0.5 text-[11px] font-medium text-white/88 backdrop-blur-sm">动图</span> : null}
             {index === visible.length - 1 && total > visible.length ? <span className="absolute inset-0 grid place-items-center bg-black/55 text-xl font-semibold text-white">+{total - visible.length}</span> : null}
           </>
         );

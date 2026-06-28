@@ -34,6 +34,7 @@ export type FeedItem = {
   previewImages: FeedImage[];
   score?: number;
   partCount?: number;
+  coverIsAnimated: boolean;
 };
 
 export type FeedImage = {
@@ -42,6 +43,7 @@ export type FeedImage = {
   height: number | null;
   thumbnailUrl: string;
   originalUrl: string;
+  isAnimated: boolean;
 };
 
 export type MediaPart = {

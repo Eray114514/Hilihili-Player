@@ -48,7 +48,9 @@ export function ImageLightbox({ images, index, onChange, onClose }: { images: It
         <ApiImage src={assetUrl(image.originalUrl) ?? ""} alt={`原图 ${index + 1}`} width={image.width ?? 1600} height={image.height ?? 1200} className="max-h-[92vh] max-w-[94vw] object-contain" />
       </motion.div>
       {images.length > 1 ? <button type="button" className="icon-button absolute right-3 top-1/2 z-10 -translate-y-1/2" aria-label="下一张" onClick={(event) => { event.stopPropagation(); onChange((index + 1) % images.length); }}><ChevronRight /></button> : null}
-      <span className="absolute bottom-4 rounded-full bg-black/65 px-3 py-1 text-xs text-white/70">{index + 1} / {images.length}</span>
+      <span className="absolute bottom-4 rounded-full bg-black/65 px-3 py-1 text-xs text-white/70">
+        {index + 1} / {images.length}{image.isAnimated ? ` · 动图${image.durationMs ? ` · ${(image.durationMs / 1000).toFixed(1)}s` : ""}${image.frameCount ? ` · ${image.frameCount}帧` : ""}` : ""}
+      </span>
     </motion.div>
   );
 }

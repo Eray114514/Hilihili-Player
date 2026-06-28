@@ -42,6 +42,7 @@ export function VideoCard({ item, eager = false }: { item: FeedItem; eager?: boo
             </div>
           )}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/72 to-transparent opacity-90" />
+          {item.coverIsAnimated ? <span className="absolute left-1.5 top-1.5 rounded bg-black/72 px-1.5 py-0.5 text-[11px] font-medium text-white/88 backdrop-blur-sm">动图</span> : null}
           {badge ? <span className="absolute bottom-1.5 right-1.5 rounded bg-black/72 px-1.5 py-0.5 text-[11px] font-medium text-white/88">{badge}</span> : null}
         </div>
         </Link>
