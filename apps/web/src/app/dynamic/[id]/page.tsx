@@ -47,7 +47,7 @@ export default function DynamicDetailPage() {
               <h1 className="text-xl font-semibold leading-8 md:text-2xl">{detail.item.title}</h1>
               {detail.item.post_body || detail.item.description ? <p className="mt-4 whitespace-pre-wrap text-[15px] leading-7 text-white/76">{detail.item.post_body ?? detail.item.description}</p> : detail.item.kind === "post" ? <p className="mt-4 rounded-xl bg-white/[0.035] p-4 text-sm text-white/40">这条动态没有可显示的正文。</p> : null}
 
-              {detail.images.length > 0 ? <section className="mt-6" aria-label="动态图片"><ImageMosaic images={detail.images} total={detail.images.length} onSelect={setLightboxIndex} /></section> : detail.item.kind === "image" ? <div className="mt-6 grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 text-white/32"><span className="flex items-center gap-2"><ImageIcon /> 图片暂时无法读取</span></div> : null}
+              {detail.images.length > 0 ? <section className="mt-6" aria-label="动态图片"><ImageMosaic images={detail.images} total={detail.images.length} onSelect={setLightboxIndex} showAll /></section> : detail.item.kind === "image" ? <div className="mt-6 grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 text-white/32"><span className="flex items-center gap-2"><ImageIcon /> 图片暂时无法读取</span></div> : null}
 
               {activePart ? (
                 <section className="mt-7">

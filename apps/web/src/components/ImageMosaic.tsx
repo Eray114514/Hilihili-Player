@@ -6,8 +6,36 @@ import { ApiImage } from "@/components/ApiImage";
 
 type MosaicImage = FeedImage | ItemImage;
 
-export function ImageMosaic({ images, total = images.length, href, onSelect }: { images: MosaicImage[]; total?: number; href?: string; onSelect?: (index: number) => void }) {
+export function ImageMosaic({ images, total = images.length, href, onSelect, showAll = false }: { images: MosaicImage[]; total?: number; href?: string; onSelect?: (index: number) => void; showAll?: boolean }) {
   if (images.length === 0) return null;
+
+  // 详情页：显示全部图片，masonry 瀑布流保留原比例，合理利用显示空间
+  if (showAll) {
+    const colClass = images.length === 1
+      ? "columns-1 max-w-[42rem] mx-auto"
+      : images.length <= 4
+        ? "columns-2"
+        : "columns-2 md:columns-3";
+    return (
+      <div className={`mt-4 ${colClass} gap-1.5`}>
+        {images.map((image, index) => {
+          const w = image.width ?? 4;
+          const h = image.height ?? 3;
+          const tile = (
+            <>
+              <ApiImage src={assetUrl(image.thumbnailUrl) ?? ""} alt={`第 ${index + 1} 张图片`} width={w} height={h} sizes="(min-width: 768px) 300px, 50vw" className="h-auto w-full transition duration-300 group-hover:scale-[1.025]" />
+              {image.isAnimated ? <span className="absolute left-1.5 top-1.5 rounded bg-black/72 px-1.5 py-0.5 text-[11px] font-medium text-white/88 backdrop-blur-sm">动图</span> : null}
+            </>
+          );
+          const className = "group relative mb-1.5 block break-inside-avoid overflow-hidden rounded-lg bg-white/5";
+          if (onSelect) return <button type="button" key={image.id} className={className} onClick={() => onSelect(index)}>{tile}</button>;
+          return <Link key={image.id} href={href ?? "#"} className={className}>{tile}</Link>;
+        })}
+      </div>
+    );
+  }
+
+  // 信息流卡片：最多 9 张 + "+N"，固定网格裁切（卡片场景需紧凑）
   const visible = images.slice(0, 9);
   const columns = visible.length === 1 ? "grid-cols-1 max-w-[34rem]" : visible.length === 2 ? "grid-cols-2 max-w-[38rem]" : "grid-cols-3 max-w-[38rem]";
 
