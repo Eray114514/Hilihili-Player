@@ -32,6 +32,42 @@ corepack pnpm db:push          # push Drizzle schema to SQLite
 
 Run verification in this order: `lint -> typecheck -> build`.
 
+## 改动后自检纪律
+
+AI 改完代码 push 前必须自检。按改动范围分两级，AI 必须先判定本次属于哪一级，再执行对应检查，全过才能 push。
+
+### A 级：完整自检（`lint -> typecheck -> build -> test` 全过才能 push）
+
+满足以下任一条件即属 A 级：
+
+- 改了 `packages/db/src/schema.ts` 或迁移逻辑（`packages/db/src/index.ts` 的 `migrate` / `ensureColumn` / `mergeLegacyCreators`）
+- 改了 `packages/media/src/index.ts` 的扫描、指纹、缩略图、转码、`fingerprintFile`、`runProcess` 逻辑
+- 改了 `packages/recommendation/src/index.ts` 的推荐算法
+- 改了 `apps/api/src/index.ts` 的路由处理器或 SQL
+- 改了 `apps/worker/src/index.ts` 的扫描调度、watcher、graceful shutdown
+- 改了 `apps/web/src/components/VideoPlayer.tsx` 的播放/字幕/状态机逻辑
+- 跨 2 个及以上 package / app 的改动
+- 新增或升级依赖（改了任何 `package.json` 的 `dependencies` 或 `devDependencies`）
+- 改了 `Dockerfile` / `docker-compose.yml` / `.github/workflows/` / `scripts/dev-safe.mjs`
+
+### B 级：简化自检（至少跑相关包的 typecheck）
+
+仅改以下范围，可只跑相关包的 `corepack pnpm --filter <pkg> typecheck`：
+
+- 仅改 `apps/web/src` 下的纯展示组件、文案、样式、骨架
+- 仅改 `apps/web/src/app/*/page.tsx` 内的数据获取与渲染（不动 `lib/api.ts` 的类型）
+- 仅改 `README.md` / `AGENTS.md` / `CLAUDE.md` / `.env.example` 注释
+
+### AI 自我约束
+
+push 前 AI 必须在回复里明确说出：
+
+1. 本次改动属 A 级还是 B 级（引用上面哪条规则判定）
+2. 已跑的命令与退出码（不允许"我检查过了"这种空话）
+3. 若跳过任何检查，必须说明具体原因
+
+CI 会再跑一遍 `lint -> typecheck -> test -> build` 作为双保险。其中 `typecheck` / `test` / `build` 失败会阻断镜像推送（这些是真问题，不是 warning）；`lint` 失败只红叉不阻断（warning 不应挡住新版本）。
+
 ## Ports
 
 - Web: `http://localhost:3000`

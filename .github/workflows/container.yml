@@ -11,7 +11,32 @@ permissions:
   packages: write
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.23.0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: corepack pnpm install --frozen-lockfile
+      # lint 只红叉不阻断：warning 不应挡住新版本体验
+      - name: Lint (non-blocking)
+        run: corepack pnpm lint
+        continue-on-error: true
+      # 以下三项失败会阻断镜像推送（真问题）
+      - name: Typecheck
+        run: corepack pnpm typecheck
+      - name: Test
+        run: corepack pnpm test
+      - name: Build
+        run: corepack pnpm build
+
   build:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
