@@ -1,4 +1,5 @@
 import type { DirectoryEntry, FeedItem, Library, Reaction, ScanRun, SearchHistoryItem, ThumbnailStatus } from "@hilihili/shared";
+import useSWR, { type SWRConfiguration } from "swr";
 
 function getApiBase() {
   if (typeof window !== "undefined") {
@@ -19,22 +20,35 @@ function getApiBase() {
   return process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4141";
 }
 
-export const apiBase = getApiBase();
-
 export function apiUrl(path: string) {
-  return `${apiBase}${path}`;
+  return `${getApiBase()}${path}`;
 }
 
 export function assetUrl(path: string | null) {
-  return path ? `${apiBase}${path}` : null;
+  return path ? `${getApiBase()}${path}` : null;
 }
 
 export async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(apiUrl(path), { cache: "no-store" });
+  const response = await fetch(apiUrl(path));
   if (!response.ok) {
     throw new Error(await response.text());
   }
   return response.json() as Promise<T>;
+}
+
+// SWR fetcher：复用 getJson 的错误处理，但不强制 cache: "no-store"
+// （SWR 自己管缓存去重，底层 fetch 走默认 HTTP 缓存策略）
+export async function apiFetcher<T>(path: string): Promise<T> {
+  const response = await fetch(apiUrl(path));
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<T>;
+}
+
+// 通用 useApi hook：path 为 null 时不发请求（用于条件请求）
+export function useApi<T>(path: string | null, options?: SWRConfiguration<T>) {
+  return useSWR<T>(path, apiFetcher, options);
 }
 
 export async function postJson<T>(path: string, body: unknown): Promise<T> {

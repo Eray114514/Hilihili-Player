@@ -1,14 +1,13 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { VideoGrid } from "@/components/VideoCard";
-import { getJson, type FeedResponse } from "@/lib/api";
+import { useApi, type FeedResponse } from "@/lib/api";
 
 export default function CategoryPage() {
   const params = useParams<{ id: string }>();
-  // Keyed remount on id change resets local state (loading=true) without a synchronous setState in effect.
+  // Keyed remount on id change resets SWR 本地状态（isLoading=true）。
   return (
     <AppShell>
       <div className="mb-7">
@@ -21,18 +20,11 @@ export default function CategoryPage() {
 }
 
 function CategoryContent({ id }: { id: string }) {
-  const [items, setItems] = useState<FeedResponse["items"]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data, error, isLoading } = useApi<FeedResponse>(`/feeds/category/${id}`);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    void getJson<FeedResponse>(`/feeds/category/${id}`)
-      .then((response) => { if (!controller.signal.aborted) setItems(response.items); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [id]);
-
-  return loading ? <CategorySkeleton /> : <div className="animate-fade-in"><VideoGrid items={items} /></div>;
+  if (isLoading || error) return <CategorySkeleton />;
+  const items = data?.items ?? [];
+  return <div className="animate-fade-in"><VideoGrid items={items} /></div>;
 }
 
 function CategorySkeleton() {

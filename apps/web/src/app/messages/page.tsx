@@ -2,22 +2,19 @@
 
 import { BellRing, Inbox, Play } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { AppShell } from "@/components/AppShell";
 import { ApiImage } from "@/components/ApiImage";
 import { CreatorAvatar } from "@/components/CreatorAvatar";
-import { assetUrl, getJson, postJson, type MessageResponse } from "@/lib/api";
+import { assetUrl, postJson, useApi, type MessageResponse } from "@/lib/api";
 
 export default function MessagesPage() {
-  const [data, setData] = useState<MessageResponse | null>(null);
-  const [failed, setFailed] = useState(false);
+  const { data, error } = useApi<MessageResponse>("/me/messages?limit=80");
+  const failed = Boolean(error);
 
+  // 副作用：进入页面即标记全部已读（不关心返回值，不依赖 useApi 的数据）。
   useEffect(() => {
-    let ignore = false;
-    void postJson("/me/messages:read", {}).then(() => getJson<MessageResponse>("/me/messages?limit=80"))
-      .then((response) => { if (!ignore) setData(response); })
-      .catch(() => { if (!ignore) setFailed(true); });
-    return () => { ignore = true; };
+    void postJson("/me/messages:read", {}).catch(() => {});
   }, []);
 
   return <AppShell><div className="mx-auto max-w-4xl"><section className="mb-6 rounded-3xl border border-white/8 bg-[radial-gradient(circle_at_top_right,rgba(94,234,212,.15),transparent_35%),#11151c] p-5 md:p-7"><div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)]"><BellRing size={21} /></span><div><p className="text-xs font-medium uppercase tracking-[.16em] text-[var(--accent)]/75">Video inbox</p><h1 className="mt-1 text-2xl font-semibold md:text-3xl">视频消息</h1></div></div><p className="mt-4 text-sm leading-6 text-white/50">特别关注的 UP 有新视频入库时，会在这里等你。打开此页后消息已全部标记为已读。</p></section>{failed ? <MessageState title="消息暂时加载失败" body="请确认 API 服务正在运行后再试一次。" /> : !data ? <MessageSkeleton /> : data.messages.length === 0 ? <MessageState title="还没有新视频消息" body="到喜欢的 UP 主页点下“特别关注”，下次扫描发现新视频时就会出现在这里。" /> : <div className="space-y-3 animate-fade-in">{data.messages.map((message) => <MessageCard key={message.id} message={message} />)}</div>}</div></AppShell>;

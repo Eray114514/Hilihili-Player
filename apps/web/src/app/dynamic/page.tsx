@@ -1,11 +1,11 @@
 "use client";
 
 import { RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { FeedItem } from "@hilihili/shared";
 import { AppShell, EmptyState } from "@/components/AppShell";
 import { DynamicFeedCard } from "@/components/DynamicFeedCard";
-import { getJson, type FeedResponse } from "@/lib/api";
+import { useApi, type FeedResponse } from "@/lib/api";
 
 type Sort = "newest" | "oldest" | "random";
 type Kind = "all" | "video" | "post" | "image";
@@ -18,21 +18,15 @@ const kinds: { value: Kind; label: string }[] = [
 ];
 
 export default function DynamicPage() {
-  const [items, setItems] = useState<FeedItem[]>([]);
   const [sort, setSort] = useState<Sort>("newest");
   const [kind, setKind] = useState<Kind>("all");
   const [seed, setSeed] = useState("dynamic");
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    void getJson<FeedResponse>(`/feeds/dynamic?limit=80&sort=${sort}&kind=${kind}&seed=${seed}`)
-      .then((response) => setItems(response.items))
-      .catch(() => { if (!controller.signal.aborted) setFailed(true); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [sort, kind, seed]);
+  // key 包含 sort/kind/seed，任一变化 SWR 自动重新请求。
+  const key = `/feeds/dynamic?limit=80&sort=${sort}&kind=${kind}&seed=${seed}`;
+  const { data, error, isLoading } = useApi<FeedResponse>(key);
+  const items: FeedItem[] = data?.items ?? [];
+  const failed = Boolean(error);
 
   return (
     <AppShell>
@@ -41,13 +35,13 @@ export default function DynamicPage() {
           <h1 className="text-2xl font-semibold md:text-3xl">动态</h1>
           <p className="mt-2 text-sm leading-6 text-white/48">沿着发布时间翻看每位 UP 的投稿、图文与图片集。</p>
           <div className="mt-5 flex flex-wrap items-center gap-2">
-            <div className="filter-group">{kinds.map((item) => <button type="button" key={item.value} disabled={kind === item.value} className={kind === item.value ? "active" : ""} onClick={() => { setLoading(true); setFailed(false); setKind(item.value); }}>{item.label}</button>)}</div>
-            <div className="filter-group">{(["newest", "oldest", "random"] as Sort[]).map((value) => <button type="button" key={value} disabled={sort === value} className={sort === value ? "active" : ""} onClick={() => { setLoading(true); setFailed(false); setSort(value); }}>{value === "newest" ? "最新" : value === "oldest" ? "最早" : "随机"}</button>)}</div>
-            {sort === "random" ? <button type="button" className="primary-button" onClick={() => { setLoading(true); setFailed(false); setSeed(String(Date.now())); }}><RefreshCw size={16} /> 换一批</button> : null}
+            <div className="filter-group">{kinds.map((item) => <button type="button" key={item.value} disabled={kind === item.value} className={kind === item.value ? "active" : ""} onClick={() => setKind(item.value)}>{item.label}</button>)}</div>
+            <div className="filter-group">{(["newest", "oldest", "random"] as Sort[]).map((value) => <button type="button" key={value} disabled={sort === value} className={sort === value ? "active" : ""} onClick={() => setSort(value)}>{value === "newest" ? "最新" : value === "oldest" ? "最早" : "随机"}</button>)}</div>
+            {sort === "random" ? <button type="button" className="primary-button" onClick={() => setSeed(String(Date.now()))}><RefreshCw size={16} /> 换一批</button> : null}
           </div>
         </section>
 
-        {failed ? <div className="rounded-2xl border border-red-400/15 bg-red-400/5 p-8 text-center text-sm text-red-100/70">动态加载失败，请确认 API 服务正在运行。</div> : loading ? <DynamicSkeleton /> : items.length === 0 ? <EmptyState title="动态还是空的" body="添加媒体库并扫描后，视频、图文和图集会按内容时间出现在这里。" /> : (
+        {failed ? <div className="rounded-2xl border border-red-400/15 bg-red-400/5 p-8 text-center text-sm text-red-100/70">动态加载失败，请确认 API 服务正在运行。</div> : isLoading ? <DynamicSkeleton /> : items.length === 0 ? <EmptyState title="动态还是空的" body="添加媒体库并扫描后，视频、图文和图集会按内容时间出现在这里。" /> : (
           <div className="space-y-4 animate-fade-in">{items.map((item) => <DynamicFeedCard key={item.id} item={item} />)}</div>
         )}
       </div>

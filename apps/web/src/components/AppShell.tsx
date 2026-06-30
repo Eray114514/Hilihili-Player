@@ -6,7 +6,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense, type ReactNode, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import type { SearchHistoryItem } from "@hilihili/shared";
-import { clearSearchHistory, deleteSearchHistory, getJson, getSearchHistory } from "@/lib/api";
+import { clearSearchHistory, deleteSearchHistory, getSearchHistory, useApi } from "@/lib/api";
 
 const navItems = [
   { href: "/", label: "首页", icon: Home },
@@ -195,15 +195,12 @@ function HeaderSearchFallback() {
 }
 
 function MessageButton() {
-  const [unread, setUnread] = useState(0);
-  useEffect(() => {
-    let disposed = false;
-    const refresh = () => { void getJson<{ unreadCount: number }>("/me/messages/unread-count").then((data) => { if (!disposed) setUnread(data.unreadCount); }).catch(() => {}); };
-    refresh();
-    const interval = window.setInterval(refresh, 30000);
-    window.addEventListener("focus", refresh);
-    return () => { disposed = true; window.clearInterval(interval); window.removeEventListener("focus", refresh); };
-  }, []);
+  // SWR 的 refreshInterval 替代 setInterval，revalidateOnFocus 替代 focus 事件监听。
+  const { data } = useApi<{ unreadCount: number }>("/me/messages/unread-count", {
+    refreshInterval: 30000,
+    revalidateOnFocus: true
+  });
+  const unread = data?.unreadCount ?? 0;
   return <Link href="/messages" className="relative grid h-10 w-10 place-items-center rounded-xl text-white/55 transition hover:bg-white/7 hover:text-white" aria-label={unread > 0 ? `视频消息，${unread} 条未读` : "视频消息"}><Bell size={19} />{unread > 0 ? <span className="absolute -right-1 -top-1 grid min-w-5 place-items-center rounded-full bg-[var(--accent)] px-1 text-[10px] font-bold leading-5 text-black">{unread > 99 ? "99+" : unread}</span> : null}</Link>;
 }
 

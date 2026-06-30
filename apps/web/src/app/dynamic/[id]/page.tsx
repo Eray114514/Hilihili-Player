@@ -3,29 +3,21 @@
 import { ArrowLeft, ImageIcon, Play } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { AnimatePresence } from "motion/react";
 import { AppShell } from "@/components/AppShell";
 import { CreatorAvatar } from "@/components/CreatorAvatar";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { ImageMosaic } from "@/components/ImageMosaic";
 import { VideoPlayer } from "@/components/VideoPlayer";
-import { getJson, type ItemDetail } from "@/lib/api";
+import { useApi, type ItemDetail } from "@/lib/api";
 
 export default function DynamicDetailPage() {
   const params = useParams<{ id: string }>();
-  const [detail, setDetail] = useState<ItemDetail | null>(null);
-  const [failed, setFailed] = useState(false);
+  const { data: detail, error } = useApi<ItemDetail>(`/items/${params.id}`);
+  const failed = Boolean(error);
   const [activePartIndex, setActivePartIndex] = useState(0);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
-
-  useEffect(() => {
-    let ignore = false;
-    void getJson<ItemDetail>(`/items/${params.id}`)
-      .then((response) => { if (!ignore) setDetail(response); })
-      .catch(() => { if (!ignore) setFailed(true); });
-    return () => { ignore = true; };
-  }, [params.id]);
 
   const activePart = detail?.parts[activePartIndex];
   return (

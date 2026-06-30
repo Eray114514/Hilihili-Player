@@ -4,10 +4,10 @@ import { CheckCircle2, Clock3, Coins, Heart, History, Play, RotateCcw, Trash2 } 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useState } from "react";
 import { ApiImage } from "@/components/ApiImage";
 import { AppShell } from "@/components/AppShell";
-import { assetUrl, deleteJson, getJson, patchJson, putJson, type ActivityEntry, type ActivityResponse } from "@/lib/api";
+import { assetUrl, deleteJson, patchJson, putJson, useApi, type ActivityEntry, type ActivityResponse } from "@/lib/api";
 import { slideUp } from "@/lib/motion";
 
 type ActivityTab = "continue" | "history" | "completed" | "likes" | "coins";
@@ -31,21 +31,11 @@ export default function HistoryPage() {
 function HistoryPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [data, setData] = useState<ActivityResponse | null>(null);
+  const { data, mutate } = useApi<ActivityResponse>("/me/activity?limit=80");
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const tabParam = searchParams.get("tab");
   const tab: ActivityTab = tabParam && tabs.some((item) => item.id === tabParam) ? (tabParam as ActivityTab) : "continue";
-
-  const load = useCallback(async () => setData(await getJson<ActivityResponse>("/me/activity?limit=80")), []);
-
-  useEffect(() => {
-    let ignore = false;
-    void getJson<ActivityResponse>("/me/activity?limit=80").then((response) => {
-      if (!ignore) setData(response);
-    });
-    return () => { ignore = true; };
-  }, []);
 
   async function removeProgress(entry: ActivityEntry) {
     setBusyId(entry.item.id);
@@ -56,7 +46,8 @@ function HistoryPageInner() {
         // 404 表示记录已不存在，刷新列表即可同步
         console.error("[history] 移除观看进度失败", error);
       }
-      await load();
+      // 触发 SWR 重新校验（替代原 load()）
+      await mutate();
     } finally {
       setBusyId(null);
     }
@@ -66,7 +57,7 @@ function HistoryPageInner() {
     setBusyId(entry.item.id);
     try {
       await putJson(`/items/${entry.item.id}/reaction`, { reaction: null });
-      await load();
+      await mutate();
     } finally {
       setBusyId(null);
     }
@@ -76,7 +67,7 @@ function HistoryPageInner() {
     setBusyId(entry.item.id);
     try {
       await patchJson(`/items/${entry.item.id}/coin`, {});
-      await load();
+      await mutate();
     } finally {
       setBusyId(null);
     }

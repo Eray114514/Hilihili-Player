@@ -3,12 +3,12 @@
 import { Ban, Bell, BellOff, Film, ImageIcon, LoaderCircle, MoreHorizontal, Radio } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { AppShell, EmptyState } from "@/components/AppShell";
 import { ApiImage } from "@/components/ApiImage";
 import { CreatorAvatar } from "@/components/CreatorAvatar";
 import { VideoGrid } from "@/components/VideoCard";
-import { assetUrl, getJson, putJson, type CreatorDetail, type CreatorItemsResponse } from "@/lib/api";
+import { assetUrl, getJson, putJson, useApi, type CreatorDetail, type CreatorItemsResponse } from "@/lib/api";
 
 type ContentKind = "all" | "video" | "post" | "image";
 
@@ -21,29 +21,20 @@ const filters: { value: ContentKind; label: string; icon: typeof Film }[] = [
 
 export default function CreatorPage() {
   const params = useParams<{ id: string }>();
-  const [profile, setProfile] = useState<CreatorDetail | null>(null);
-  const [items, setItems] = useState<CreatorItemsResponse["items"]>([]);
   const [kind, setKind] = useState<ContentKind>("all");
-  const [hasMore, setHasMore] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState<"follow" | "block" | null>(null);
 
-  useEffect(() => {
-    let ignore = false;
-    const suffix = kind === "all" ? "" : `&kind=${kind}`;
-    void Promise.all([getJson<CreatorDetail>(`/creators/${params.id}`), getJson<CreatorItemsResponse>(`/creators/${params.id}/items?limit=24${suffix}`)])
-      .then(([detail, content]) => {
-        if (ignore) return;
-        setProfile(detail);
-        setItems(content.items);
-        setHasMore(content.hasMore);
-      })
-      .catch(() => { if (!ignore) setFailed(true); })
-      .finally(() => { if (!ignore) setLoading(false); });
-    return () => { ignore = true; };
-  }, [kind, params.id]);
+  const itemsSuffix = kind === "all" ? "" : `&kind=${kind}`;
+  const itemsKey = `/creators/${params.id}/items?limit=24${itemsSuffix}`;
+
+  // 方案 A：两个独立 useApi，各自可独立 revalidate。
+  // “加载更多”的投稿直接累积进 itemsData 的 SWR 缓存（mutateItems），切换 kind 时
+  // itemsKey 变化 → SWR 自动新建缓存条目，无需手动 reset 累积状态。
+  const { data: profile, error: profileError, mutate: mutateProfile } = useApi<CreatorDetail>(`/creators/${params.id}`);
+  const { data: itemsData, error: itemsError, isLoading: itemsLoading, mutate: mutateItems } = useApi<CreatorItemsResponse>(itemsKey);
+
+  const failed = Boolean(profileError || itemsError);
 
   async function toggleFollow() {
     if (!profile) return;
@@ -51,7 +42,8 @@ export default function CreatorPage() {
     setBusy("follow");
     try {
       await putJson(`/creators/${params.id}/follow`, { followed: next });
-      setProfile((current) => current ? { ...current, creator: { ...current.creator, followed: next ? 1 : 0 } } : current);
+      // 乐观更新：直接写入新数据，不触发 revalidate（与原行为一致）。
+      mutateProfile({ ...profile, creator: { ...profile.creator, followed: next ? 1 : 0 } }, { revalidate: false });
     } finally { setBusy(null); }
   }
 
@@ -61,14 +53,16 @@ export default function CreatorPage() {
     setBusy("block");
     try {
       await putJson(`/creators/${params.id}/blacklist`, { blacklisted: next });
-      setProfile((current) => current ? { ...current, creator: { ...current.creator, blacklisted: next ? 1 : 0, followed: next ? 0 : current.creator.followed } } : current);
+      mutateProfile({ ...profile, creator: { ...profile.creator, blacklisted: next ? 1 : 0, followed: next ? 0 : profile.creator.followed } }, { revalidate: false });
     } finally { setBusy(null); }
   }
 
   if (failed) return <AppShell><EmptyState title="这个 UP 暂时找不到" body="可能媒体库正在刷新，或该 UP 已不再有可展示的投稿。" /></AppShell>;
-  if (!profile || loading && items.length === 0) return <CreatorSkeleton />;
+  if (!profile) return <CreatorSkeleton />;
 
   const { creator, stats, categories } = profile;
+  const items = itemsData?.items ?? [];
+  const hasMore = itemsData?.hasMore ?? false;
   const banner = assetUrl(creator.bannerUrl);
   return (
     <AppShell wide>
@@ -100,9 +94,10 @@ export default function CreatorPage() {
       ].map(([label, value]) => <div key={String(label)} className="rounded-2xl border border-white/8 bg-white/[0.028] p-4"><div className="font-mono text-2xl font-semibold tabular-nums">{Number(value ?? 0)}</div><div className="mt-1 text-xs text-white/42">{label}</div></div>)}</section>
 
       <section className="mt-9">
-        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-xs font-medium uppercase tracking-[.18em] text-[var(--accent)]/75">Archive</p><h2 className="mt-1 text-2xl font-semibold">投稿列表</h2></div><div className="filter-group self-start sm:self-auto">{filters.map((filter) => { const Icon = filter.icon; return <button type="button" key={filter.value} className={kind === filter.value ? "active" : ""} onClick={() => { if (kind !== filter.value) { setLoading(true); setFailed(false); setKind(filter.value); } }}><Icon className="mr-1 inline" size={14} />{filter.label}</button>; })}</div></div>
-        <div className="mt-6">{loading ? <GridSkeleton /> : items.length === 0 ? <EmptyState title="这里还没有这类投稿" body="换一个内容分类，或者等待媒体库完成下一次扫描。" /> : <div className="animate-fade-in"><VideoGrid items={items} /></div>}</div>
-        {hasMore ? <div className="flex justify-center pt-10"><button disabled={loadingMore} onClick={() => { const suffix = kind === "all" ? "" : `&kind=${kind}`; setLoadingMore(true); void getJson<CreatorItemsResponse>(`/creators/${params.id}/items?limit=24&offset=${items.length}${suffix}`).then((response) => { setItems((current) => [...current, ...response.items]); setHasMore(response.hasMore); }).finally(() => setLoadingMore(false)); }} className="secondary-button">{loadingMore ? <LoaderCircle className="animate-spin" size={16} /> : null}{loadingMore ? "正在加载…" : "加载更多投稿"}</button></div> : null}
+        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-xs font-medium uppercase tracking-[.18em] text-[var(--accent)]/75">Archive</p><h2 className="mt-1 text-2xl font-semibold">投稿列表</h2></div><div className="filter-group self-start sm:self-auto">{filters.map((filter) => { const Icon = filter.icon; return <button type="button" key={filter.value} className={kind === filter.value ? "active" : ""} onClick={() => setKind(filter.value)}><Icon className="mr-1 inline" size={14} />{filter.label}</button>; })}</div></div>
+        <div className="mt-6">{itemsLoading && items.length === 0 ? <GridSkeleton /> : items.length === 0 ? <EmptyState title="这里还没有这类投稿" body="换一个内容分类，或者等待媒体库完成下一次扫描。" /> : <div className="animate-fade-in"><VideoGrid items={items} /></div>}</div>
+        {hasMore ? <div className="flex justify-center pt-10"><button disabled={loadingMore} onClick={() => { const suffix = kind === "all" ? "" : `&kind=${kind}`; setLoadingMore(true); void getJson<CreatorItemsResponse>(`/creators/${params.id}/items?limit=24&offset=${items.length}${suffix}`).then((response) => { // 把追加页累积进 SWR 缓存（不触发 revalidate，避免重新请求第一页）。
+        mutateItems((current) => current ? { items: [...current.items, ...response.items], total: response.total, hasMore: response.hasMore } : current, { revalidate: false }); }).catch(() => {}).finally(() => setLoadingMore(false)); }} className="secondary-button">{loadingMore ? <LoaderCircle className="animate-spin" size={16} /> : null}{loadingMore ? "正在加载…" : "加载更多投稿"}</button></div> : null}
       </section>
     </AppShell>
   );
