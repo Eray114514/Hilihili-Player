@@ -1,12 +1,11 @@
-import type { FastifyInstance } from "fastify";
 import { clearSearchHistory, createId, deleteSearchHistory, listSearchHistory, nowIso } from "@hilihili/db";
 import { getFeedItemsByIds } from "@hilihili/recommendation";
 import type { FeedItem } from "@hilihili/shared";
 import { db } from "../lib/db.js";
 import { clampLimit } from "../lib/clamp.js";
-import type { ActivityRow, FavoriteFolderBody } from "../lib/types.js";
+import { type ActivityRow, emptySchema, favoriteFolderSchema, type ZodFastifyInstance } from "../lib/types.js";
 
-export async function meRoutes(app: FastifyInstance) {
+export async function meRoutes(app: ZodFastifyInstance) {
   app.get<{ Querystring: { limit?: string } }>("/me/activity", async (request) => {
     const limit = clampLimit(Number(request.query.limit ?? 60), 60);
     const historyRows = db.prepare(`
@@ -122,7 +121,7 @@ export async function meRoutes(app: FastifyInstance) {
     return { messages, total, unreadCount, hasMore: offset + rows.length < total };
   });
 
-  app.post("/me/messages:read", async () => {
+  app.post("/me/messages:read", { schema: { body: emptySchema } }, async () => {
     const timestamp = nowIso();
     db.prepare("UPDATE creator_messages SET read_at = ? WHERE read_at IS NULL").run(timestamp);
     return { readAt: timestamp };
@@ -153,8 +152,8 @@ export async function meRoutes(app: FastifyInstance) {
     `).all()
   }));
 
-  app.post<{ Body: FavoriteFolderBody }>("/me/favorites/folders", async (request, reply) => {
-    const body = request.body ?? ({} as typeof request.body);
+  app.post("/me/favorites/folders", { schema: { body: favoriteFolderSchema } }, async (request, reply) => {
+    const body = request.body;
     const name = body.name?.trim() ?? "";
     if (!name || name.length > 50) {
       return reply.code(400).send({ error: "Invalid folder name" });

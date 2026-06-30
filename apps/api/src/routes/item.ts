@@ -1,12 +1,20 @@
-import type { FastifyInstance } from "fastify";
 import { createId, nowIso } from "@hilihili/db";
 import { addManualTagToItem, listItemTags, removeTagFromItem } from "@hilihili/media";
 import { getRecommendedFeed } from "@hilihili/recommendation";
 import { db } from "../lib/db.js";
 import { recordRecommendationSignals } from "../lib/signals.js";
-import type { CommentBody, FavoriteItemBody, InteractionBody, TagBody } from "../lib/types.js";
+import {
+  commentSchema,
+  emptySchema,
+  favoriteItemSchema,
+  idParamSchema,
+  interactionSchema,
+  reactionSchema,
+  tagSchema,
+  type ZodFastifyInstance
+} from "../lib/types.js";
 
-export async function itemRoutes(app: FastifyInstance) {
+export async function itemRoutes(app: ZodFastifyInstance) {
   app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
     const item = db.prepare(`
       SELECT mi.*, c.name AS categoryName, cr.name AS creatorName, cr.alias AS creatorAlias,
@@ -122,9 +130,9 @@ export async function itemRoutes(app: FastifyInstance) {
     return { item, parts: partsWithSubtitles, images: imageAssets, tags: tagDetails.map((tag) => tag.name), tagDetails, comments, related, favoritedFolderIds };
   });
 
-  app.post<{ Params: { id: string }; Body: TagBody }>("/items/:id/tags", async (request, reply) => {
+  app.post("/items/:id/tags", { schema: { params: idParamSchema, body: tagSchema } }, async (request, reply) => {
     try {
-      const body = request.body ?? ({} as typeof request.body);
+      const body = request.body;
       const tags = addManualTagToItem(request.params.id, body.name ?? "");
       return reply.code(201).send({ tags });
     } catch (error) {
@@ -143,11 +151,8 @@ export async function itemRoutes(app: FastifyInstance) {
     }
   });
 
-  app.put<{ Params: { id: string }; Body: { reaction?: "like" | "dislike" | null } }>("/items/:id/reaction", async (request, reply) => {
-    const body = request.body ?? ({} as typeof request.body);
-    if (body.reaction !== null && body.reaction !== "like" && body.reaction !== "dislike") {
-      return reply.code(400).send({ error: "Invalid reaction" });
-    }
+  app.put("/items/:id/reaction", { schema: { params: idParamSchema, body: reactionSchema } }, async (request, reply) => {
+    const body = request.body;
     const timestamp = nowIso();
     if (body.reaction === null) {
       db.transaction(() => {
@@ -168,7 +173,7 @@ export async function itemRoutes(app: FastifyInstance) {
     return { reaction: body.reaction ?? null };
   });
 
-  app.patch<{ Params: { id: string }; Body: Record<string, never> | undefined }>("/items/:id/coin", async (request, reply) => {
+  app.patch("/items/:id/coin", { schema: { params: idParamSchema, body: emptySchema } }, async (request, reply) => {
     const itemId = request.params.id;
     const timestamp = nowIso();
     const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(itemId) as
@@ -190,12 +195,12 @@ export async function itemRoutes(app: FastifyInstance) {
     return { coined };
   });
 
-  app.post<{ Params: { id: string }; Body: InteractionBody }>("/items/:id/interactions", async (request, reply) => {
-    const body = request.body ?? ({} as typeof request.body);
+  app.post("/items/:id/interactions", { schema: { params: idParamSchema, body: interactionSchema } }, async (request, reply) => {
+    const body = request.body;
     const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(request.params.id) as
       | { id: string; creator_id: string | null; category_id: string | null }
       | undefined;
-    if (!item || !body.kind) {
+    if (!item) {
       return reply.code(400).send({ error: "Invalid interaction" });
     }
     const kind = body.kind;
@@ -265,8 +270,8 @@ export async function itemRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  app.post<{ Params: { id: string }; Body: CommentBody }>("/items/:id/comments", async (request, reply) => {
-    const body = request.body ?? ({} as typeof request.body);
+  app.post("/items/:id/comments", { schema: { params: idParamSchema, body: commentSchema } }, async (request, reply) => {
+    const body = request.body;
     const text = body.body?.trim();
     if (!text) {
       return reply.code(400).send({ error: "Comment cannot be empty" });
@@ -277,8 +282,8 @@ export async function itemRoutes(app: FastifyInstance) {
     return reply.code(201).send({ id });
   });
 
-  app.post<{ Params: { id: string }; Body: FavoriteItemBody }>("/items/:id/favorites", async (request, reply) => {
-    const body = request.body ?? ({} as typeof request.body);
+  app.post("/items/:id/favorites", { schema: { params: idParamSchema, body: favoriteItemSchema } }, async (request, reply) => {
+    const body = request.body;
     const itemId = request.params.id;
     const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(itemId) as
       | { id: string; creator_id: string | null; category_id: string | null }

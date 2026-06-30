@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
+    "@fastify/type-provider-zod": "^1.0.0",
     "@hilihili/db": "file:../../packages/db",
     "@hilihili/media": "file:../../packages/media",
     "@hilihili/recommendation": "file:../../packages/recommendation",

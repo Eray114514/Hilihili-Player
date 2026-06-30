@@ -1,19 +1,18 @@
-import type { FastifyInstance } from "fastify";
 import { basename, resolve } from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { createId, nowIso } from "@hilihili/db";
 import { enqueueScan } from "@hilihili/media";
 import { db } from "../lib/db.js";
 import { isPathAllowed } from "../lib/fs-roots.js";
-import type { AddLibraryBody } from "../lib/types.js";
+import { addLibrarySchema, scanRunSchema, type ZodFastifyInstance } from "../lib/types.js";
 
-export async function libraryRoutes(app: FastifyInstance) {
+export async function libraryRoutes(app: ZodFastifyInstance) {
   app.get("/libraries", async () => ({
     libraries: db.prepare("SELECT id, name, root_path AS rootPath, enabled, created_at AS createdAt FROM libraries ORDER BY created_at DESC").all()
   }));
 
-  app.post<{ Body: AddLibraryBody }>("/libraries", async (request, reply) => {
-    const body = request.body ?? ({} as typeof request.body);
+  app.post("/libraries", { schema: { body: addLibrarySchema } }, async (request, reply) => {
+    const body = request.body;
     const rootPath = body.rootPath ? resolve(body.rootPath) : null;
     if (!rootPath || !isPathAllowed(rootPath) || !existsSync(rootPath) || !statSync(rootPath).isDirectory()) {
       return reply.code(400).send({ error: "Choose an existing directory" });
@@ -30,8 +29,8 @@ export async function libraryRoutes(app: FastifyInstance) {
     return reply.code(201).send({ id, name, rootPath, scanRunId });
   });
 
-  app.post<{ Body: { libraryId?: string } }>("/scan/runs", async (request, reply) => {
-    const body = request.body ?? ({} as typeof request.body);
+  app.post("/scan/runs", { schema: { body: scanRunSchema } }, async (request, reply) => {
+    const body = request.body;
     const scanRunId = enqueueScan(body.libraryId);
     return reply.code(202).send({ scanRunId, status: "queued" });
   });

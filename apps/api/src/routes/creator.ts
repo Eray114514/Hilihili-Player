@@ -1,10 +1,10 @@
-import type { FastifyInstance } from "fastify";
 import { nowIso } from "@hilihili/db";
 import { getRecommendedFeed } from "@hilihili/recommendation";
 import { db } from "../lib/db.js";
 import { clampLimit } from "../lib/clamp.js";
+import { blacklistSchema, followSchema, idParamSchema, type ZodFastifyInstance } from "../lib/types.js";
 
-export async function creatorRoutes(app: FastifyInstance) {
+export async function creatorRoutes(app: ZodFastifyInstance) {
   app.get("/creators", async () => ({
     creators: db.prepare(`
       SELECT cr.id, cr.name, cr.alias, cr.description, c.name AS categoryName, COUNT(mi.id) AS itemCount
@@ -57,10 +57,10 @@ export async function creatorRoutes(app: FastifyInstance) {
     return { items, total: count.count, hasMore: offset + items.length < count.count };
   });
 
-  app.put<{ Params: { id: string }; Body: { followed?: boolean } }>("/creators/:id/follow", async (request, reply) => {
+  app.put("/creators/:id/follow", { schema: { params: idParamSchema, body: followSchema } }, async (request, reply) => {
     const exists = db.prepare("SELECT 1 FROM creators WHERE id = ?").get(request.params.id);
     if (!exists) return reply.code(404).send({ error: "Creator not found" });
-    const body = request.body ?? ({} as typeof request.body);
+    const body = request.body;
     const followed = Boolean(body.followed);
     const current = db.prepare("SELECT blacklisted FROM creator_preferences WHERE creator_id = ?").get(request.params.id) as { blacklisted: number } | undefined;
     if (followed && current?.blacklisted) return reply.code(409).send({ error: "Unblock this creator before following" });
@@ -76,10 +76,10 @@ export async function creatorRoutes(app: FastifyInstance) {
     return { followed };
   });
 
-  app.put<{ Params: { id: string }; Body: { blacklisted?: boolean } }>("/creators/:id/blacklist", async (request, reply) => {
+  app.put("/creators/:id/blacklist", { schema: { params: idParamSchema, body: blacklistSchema } }, async (request, reply) => {
     const exists = db.prepare("SELECT 1 FROM creators WHERE id = ?").get(request.params.id);
     if (!exists) return reply.code(404).send({ error: "Creator not found" });
-    const body = request.body ?? ({} as typeof request.body);
+    const body = request.body;
     const blacklisted = Boolean(body.blacklisted);
     const timestamp = nowIso();
     db.transaction(() => {

@@ -1,4 +1,5 @@
 import cors from "@fastify/cors";
+import { validatorCompiler, ZodTypeProvider } from "@fastify/type-provider-zod";
 import Fastify from "fastify";
 import { healthRoutes } from "./routes/health.js";
 import { fsRoutes } from "./routes/fs.js";
@@ -11,7 +12,9 @@ import { itemRoutes } from "./routes/item.js";
 import { mediaRoutes } from "./routes/media.js";
 import { meRoutes } from "./routes/me.js";
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true }).withTypeProvider<ZodTypeProvider>();
+// 用 zod 编译器做运行时请求体校验（withTypeProvider 只负责 TS 类型推导）
+app.setValidatorCompiler(validatorCompiler);
 await app.register(cors, {
   origin: true,
   methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
