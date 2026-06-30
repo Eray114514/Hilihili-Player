@@ -419,6 +419,46 @@ function scanCategory(db: SqliteDatabase, library: LibraryRow, categoryName: str
   return stats;
 }
 
+// 分类并索引一个 creator/fallback 下的子目录：根据内容判定为 post/gallery/
+// multi-part video。返回成功索引的条目数；返回 null 表示未匹配任何已知模式，
+// 调用方应递归进入该目录继续扫描。抛出的异常由调用方 try/catch 计入 stats.failed。
+// 抽出此函数以消除 scanCreator 与 scanFallbackFiles 的分类逻辑重复。
+function classifyAndIndexChildFolder(
+  db: SqliteDatabase,
+  library: LibraryRow,
+  categoryId: string,
+  creatorId: string,
+  creatorName: string,
+  fullPath: string,
+  entry: string,
+  tagsIndex: TagsIndex,
+  context: ScanContext
+): number | null {
+  const childEntries = safeReadDir(fullPath);
+  const videos = childEntries
+    .map((name) => join(fullPath, name))
+    .filter((path) => safeStat(path)?.isFile() && isVideoPath(path))
+    .sort(comparePartNames);
+  const images = childEntries
+    .map((name) => join(fullPath, name))
+    .filter((path) => safeStat(path)?.isFile() && isContentImage(path))
+    .sort(compareNaturalPaths);
+
+  if (existsSync(join(fullPath, "post.txt"))) {
+    return indexPost(db, library, categoryId, creatorId, fullPath, videos, images, tagsIndex, context);
+  }
+  if (entry === "图片" && images.length > 0) {
+    return indexGallery(db, library, categoryId, creatorId, creatorName, fullPath, images, tagsIndex, context);
+  }
+  if (videos.length > 0) {
+    return indexMultiPartVideo(db, library, categoryId, creatorId, fullPath, videos, tagsIndex, context);
+  }
+  if (images.length > 0) {
+    return indexGallery(db, library, categoryId, creatorId, creatorName, fullPath, images, tagsIndex, context);
+  }
+  return null;
+}
+
 function scanCreator(
   db: SqliteDatabase,
   library: LibraryRow,
@@ -448,27 +488,11 @@ function scanCreator(
         stats.skipped += 1;
         continue;
       }
-
-      const childEntries = safeReadDir(fullPath);
-      const videos = childEntries
-        .map((name) => join(fullPath, name))
-        .filter((path) => safeStat(path)?.isFile() && isVideoPath(path))
-        .sort(comparePartNames);
-      const images = childEntries
-        .map((name) => join(fullPath, name))
-        .filter((path) => safeStat(path)?.isFile() && isContentImage(path))
-        .sort(compareNaturalPaths);
-
       // 单个条目索引失败不应阻塞整个扫描；捕获异常、计数、继续下一个。
       try {
-        if (existsSync(join(fullPath, "post.txt"))) {
-          stats.indexed += indexPost(db, library, categoryId, creatorId, fullPath, videos, images, tagsIndex, context);
-        } else if (entry === "图片") {
-          stats.indexed += indexGallery(db, library, categoryId, creatorId, displayCreator, fullPath, images, tagsIndex, context);
-        } else if (videos.length > 0) {
-          stats.indexed += indexMultiPartVideo(db, library, categoryId, creatorId, fullPath, videos, tagsIndex, context);
-        } else if (images.length > 0) {
-          stats.indexed += indexGallery(db, library, categoryId, creatorId, displayCreator, fullPath, images, tagsIndex, context);
+        const indexed = classifyAndIndexChildFolder(db, library, categoryId, creatorId, displayCreator, fullPath, entry, tagsIndex, context);
+        if (indexed !== null) {
+          stats.indexed += indexed;
         } else {
           stats = addStats(stats, scanFallbackFiles(db, library, categoryName, displayCreator, fullPath, tagsIndex, context));
         }
@@ -526,28 +550,14 @@ function scanFallbackFiles(
         stats.skipped += 1;
         continue;
       }
-      const childEntries = safeReadDir(fullPath);
-      const videos = childEntries.map((name) => join(fullPath, name)).filter((path) => safeStat(path)?.isFile() && isVideoPath(path)).sort(comparePartNames);
-      const images = childEntries.map((name) => join(fullPath, name)).filter((path) => safeStat(path)?.isFile() && isContentImage(path)).sort(compareNaturalPaths);
       // 单个条目索引失败不应阻塞整个扫描；捕获异常、计数、继续下一个。
       try {
-        if (existsSync(join(fullPath, "post.txt"))) {
-          stats.indexed += indexPost(db, library, categoryId, creatorId, fullPath, videos, images, tagsIndex, context);
-          continue;
+        const indexed = classifyAndIndexChildFolder(db, library, categoryId, creatorId, creatorName, fullPath, entry, tagsIndex, context);
+        if (indexed !== null) {
+          stats.indexed += indexed;
+        } else {
+          stats = addStats(stats, scanFallbackFiles(db, library, categoryName, creatorName, fullPath, tagsIndex, context, depth + 1, visited));
         }
-        if (entry === "图片" && images.length > 0) {
-          stats.indexed += indexGallery(db, library, categoryId, creatorId, creatorName, fullPath, images, tagsIndex, context);
-          continue;
-        }
-        if (videos.length > 0) {
-          stats.indexed += indexMultiPartVideo(db, library, categoryId, creatorId, fullPath, videos, tagsIndex, context);
-          continue;
-        }
-        if (images.length > 0) {
-          stats.indexed += indexGallery(db, library, categoryId, creatorId, creatorName, fullPath, images, tagsIndex, context);
-          continue;
-        }
-        stats = addStats(stats, scanFallbackFiles(db, library, categoryName, creatorName, fullPath, tagsIndex, context, depth + 1, visited));
       } catch (error) {
         stats.failed += 1;
         log.warn("index entry failed", { path: fullPath, error: error instanceof Error ? error.message : String(error) });
