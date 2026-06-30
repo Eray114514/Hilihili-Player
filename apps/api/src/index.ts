@@ -61,6 +61,18 @@ await app.register(cors, {
   allowedHeaders: ["Content-Type", "Authorization"]
 });
 
+app.setErrorHandler((error, _request, reply) => {
+  const err = error as { statusCode?: number; message?: string };
+  const statusCode = err.statusCode ?? 500;
+  if (statusCode >= 500) {
+    console.error("[api] unhandled error:", error);
+  }
+  reply.code(statusCode).send({
+    error: statusCode === 500 ? "Internal Server Error" : err.message ?? "Error",
+    ...(statusCode < 500 && err.message ? { message: err.message } : {})
+  });
+});
+
 const db = getSqlite();
 
 app.get("/api/health", async () => {
@@ -100,22 +112,26 @@ app.get("/libraries", async () => ({
 }));
 
 app.post<{ Body: AddLibraryBody }>("/libraries", async (request, reply) => {
-  const rootPath = request.body.rootPath ? resolve(request.body.rootPath) : null;
+  const body = request.body ?? ({} as typeof request.body);
+  const rootPath = body.rootPath ? resolve(body.rootPath) : null;
   if (!rootPath || !isPathAllowed(rootPath) || !existsSync(rootPath) || !statSync(rootPath).isDirectory()) {
     return reply.code(400).send({ error: "Choose an existing directory" });
   }
 
   const id = createId("lib");
-  const name = request.body.name?.trim() || basename(rootPath) || rootPath;
-  db.prepare("INSERT INTO libraries (id, name, root_path, enabled, created_at) VALUES (?, ?, ?, 1, ?)")
-    .run(id, name, rootPath, nowIso());
-  const scanRunId = enqueueScan(id);
+  const name = body.name?.trim() || basename(rootPath) || rootPath;
+  const scanRunId = db.transaction(() => {
+    db.prepare("INSERT INTO libraries (id, name, root_path, enabled, created_at) VALUES (?, ?, ?, 1, ?)")
+      .run(id, name, rootPath, nowIso());
+    return enqueueScan(id);
+  })();
 
   return reply.code(201).send({ id, name, rootPath, scanRunId });
 });
 
 app.post<{ Body: { libraryId?: string } }>("/scan/runs", async (request, reply) => {
-  const scanRunId = enqueueScan(request.body.libraryId);
+  const body = request.body ?? ({} as typeof request.body);
+  const scanRunId = enqueueScan(body.libraryId);
   return reply.code(202).send({ scanRunId, status: "queued" });
 });
 
@@ -255,8 +271,11 @@ app.get<{ Querystring: { limit?: string } }>("/me/activity", async (request) => 
     ORDER BY ip.coined_at DESC
     LIMIT ?
   `).all(limit) as ActivityRow[];
-  const feedItems = getFeedItemsByIds([...historyRows, ...likedRows, ...coinedRows].map((row) => row.itemId));
-  const itemsById = new Map(feedItems.map((item) => [item.id, item]));
+  // 分 3 次调用，避免 getFeedItemsByIds 内部 slice(0, 80) 截断 240 条 id
+  const itemsById = new Map<string, FeedItem>();
+  for (const item of getFeedItemsByIds(historyRows.map((row) => row.itemId))) itemsById.set(item.id, item);
+  for (const item of getFeedItemsByIds(likedRows.map((row) => row.itemId))) itemsById.set(item.id, item);
+  for (const item of getFeedItemsByIds(coinedRows.map((row) => row.itemId))) itemsById.set(item.id, item);
   const toEntry = (row: ActivityRow) => {
     const item = itemsById.get(row.itemId);
     if (!item) return null;
@@ -289,12 +308,13 @@ app.get<{ Querystring: { limit?: string } }>("/me/activity", async (request) => 
     completed: history.filter((entry) => entry.finished),
     recentLikes,
     recentCoins,
-    stats: {
-      history: (db.prepare("SELECT COUNT(*) AS count FROM watch_progress").get() as { count: number }).count,
-      completed: (db.prepare("SELECT COUNT(*) AS count FROM watch_progress WHERE finished = 1").get() as { count: number }).count,
-      likes: (db.prepare("SELECT COUNT(*) AS count FROM item_preferences WHERE reaction = 'like'").get() as { count: number }).count,
-      coins: (db.prepare("SELECT COUNT(*) AS count FROM item_preferences WHERE coined = 1").get() as { count: number }).count
-    }
+    stats: db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM watch_progress) AS history,
+        (SELECT COUNT(*) FROM watch_progress WHERE finished = 1) AS completed,
+        (SELECT COUNT(*) FROM item_preferences WHERE reaction = 'like') AS likes,
+        (SELECT COUNT(*) FROM item_preferences WHERE coined = 1) AS coins
+    `).get() as { history: number; completed: number; likes: number; coins: number }
   };
 });
 
@@ -415,19 +435,7 @@ app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
     return reply.code(404).send({ error: "Item not found" });
   }
 
-  const parts = db.prepare(`
-    SELECT id, title, part_index AS partIndex, size_bytes AS sizeBytes,
-      duration_seconds AS durationSeconds,
-      compatibility_status AS compatibilityStatus,
-      compatibility_error AS compatibilityError,
-      preview_sprite_path AS previewSpritePath,
-      preview_sprite_cols AS previewSpriteCols,
-      preview_sprite_rows AS previewSpriteRows,
-      preview_sprite_interval AS previewSpriteInterval,
-      preview_thumb_w AS previewThumbW,
-      preview_thumb_h AS previewThumbH
-    FROM media_parts WHERE item_id = ? ORDER BY part_index ASC
-  `).all(request.params.id) as {
+  type PartRow = {
     id: string;
     title: string;
     partIndex: number;
@@ -441,30 +449,67 @@ app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
     previewSpriteInterval: number | null;
     previewThumbW: number | null;
     previewThumbH: number | null;
-  }[];
-
-  const partIds = parts.map((part) => part.id);
-  const subtitlesRows = partIds.length > 0
-    ? db.prepare(`
-        SELECT id, part_id AS partId, language, label, is_default AS isDefault, sort_index AS sortIndex
-        FROM media_subtitles WHERE part_id IN (${partIds.map(() => "?").join(",")})
-        ORDER BY sort_index ASC
-      `).all(...partIds) as {
-        id: string;
-        partId: string;
-        language: string;
-        label: string;
-        isDefault: number;
-        sortIndex: number;
-      }[]
-    : [];
-  const subtitlesByPart = new Map<string, { id: string; language: string; label: string; isDefault: boolean; url: string }[]>();
-  for (const row of subtitlesRows) {
-    const list = subtitlesByPart.get(row.partId) ?? [];
-    list.push({ id: row.id, language: row.language, label: row.label, isDefault: Boolean(row.isDefault), url: `/media/parts/${row.partId}/subtitles/${row.id}` });
-    subtitlesByPart.set(row.partId, list);
+  };
+  type Subtitle = { id: string; language: string; label: string; isDefault: boolean; url: string };
+  const joinRows = db.prepare(`
+    SELECT mp.id, mp.title, mp.part_index AS partIndex, mp.size_bytes AS sizeBytes,
+      mp.duration_seconds AS durationSeconds,
+      mp.compatibility_status AS compatibilityStatus,
+      mp.compatibility_error AS compatibilityError,
+      mp.preview_sprite_path AS previewSpritePath,
+      mp.preview_sprite_cols AS previewSpriteCols,
+      mp.preview_sprite_rows AS previewSpriteRows,
+      mp.preview_sprite_interval AS previewSpriteInterval,
+      mp.preview_thumb_w AS previewThumbW,
+      mp.preview_thumb_h AS previewThumbH,
+      ms.id AS subtitleId, ms.language AS subtitleLanguage, ms.label AS subtitleLabel,
+      ms.is_default AS subtitleIsDefault, ms.sort_index AS subtitleSortIndex
+    FROM media_parts mp
+    LEFT JOIN media_subtitles ms ON ms.part_id = mp.id
+    WHERE mp.item_id = ?
+    ORDER BY mp.part_index ASC, ms.sort_index ASC
+  `).all(request.params.id) as (PartRow & {
+    subtitleId: string | null;
+    subtitleLanguage: string | null;
+    subtitleLabel: string | null;
+    subtitleIsDefault: number | null;
+    subtitleSortIndex: number | null;
+  })[];
+  // 把 JOIN 出的扁平行按 part 分组，subtitles 嵌套进对应 part（2 次查询合并为 1 次）
+  const partsWithSubtitles: (PartRow & { subtitles: Subtitle[] })[] = [];
+  const partIndexById = new Map<string, number>();
+  for (const row of joinRows) {
+    let idx = partIndexById.get(row.id);
+    if (idx === undefined) {
+      idx = partsWithSubtitles.length;
+      partIndexById.set(row.id, idx);
+      partsWithSubtitles.push({
+        id: row.id,
+        title: row.title,
+        partIndex: row.partIndex,
+        sizeBytes: row.sizeBytes,
+        durationSeconds: row.durationSeconds,
+        compatibilityStatus: row.compatibilityStatus,
+        compatibilityError: row.compatibilityError,
+        previewSpritePath: row.previewSpritePath,
+        previewSpriteCols: row.previewSpriteCols,
+        previewSpriteRows: row.previewSpriteRows,
+        previewSpriteInterval: row.previewSpriteInterval,
+        previewThumbW: row.previewThumbW,
+        previewThumbH: row.previewThumbH,
+        subtitles: []
+      });
+    }
+    if (row.subtitleId) {
+      partsWithSubtitles[idx].subtitles.push({
+        id: row.subtitleId,
+        language: row.subtitleLanguage ?? "",
+        label: row.subtitleLabel ?? "",
+        isDefault: Boolean(row.subtitleIsDefault),
+        url: `/media/parts/${row.id}/subtitles/${row.subtitleId}`
+      });
+    }
   }
-  const partsWithSubtitles = parts.map((part) => ({ ...part, subtitles: subtitlesByPart.get(part.id) ?? [] }));
 
   const comments = db.prepare("SELECT id, body, at_seconds AS atSeconds, created_at AS createdAt FROM comments WHERE item_id = ? ORDER BY created_at DESC")
     .all(request.params.id);
@@ -488,7 +533,8 @@ app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
 
 app.post<{ Params: { id: string }; Body: TagBody }>("/items/:id/tags", async (request, reply) => {
   try {
-    const tags = addManualTagToItem(request.params.id, request.body.name ?? "");
+    const body = request.body ?? ({} as typeof request.body);
+    const tags = addManualTagToItem(request.params.id, body.name ?? "");
     return reply.code(201).send({ tags });
   } catch (error) {
     return reply.code(error instanceof Error && error.message === "Item not found" ? 404 : 400)
@@ -595,46 +641,49 @@ app.get<{ Params: { id: string; subId: string } }>("/media/parts/:id/subtitles/:
 });
 
 app.put<{ Params: { id: string }; Body: { reaction?: "like" | "dislike" | null } }>("/items/:id/reaction", async (request, reply) => {
-  if (request.body.reaction !== null && request.body.reaction !== "like" && request.body.reaction !== "dislike") {
+  const body = request.body ?? ({} as typeof request.body);
+  if (body.reaction !== null && body.reaction !== "like" && body.reaction !== "dislike") {
     return reply.code(400).send({ error: "Invalid reaction" });
   }
   const timestamp = nowIso();
-  if (request.body.reaction === null) {
-    db.prepare("UPDATE item_preferences SET reaction = NULL, updated_at = ? WHERE item_id = ?").run(timestamp, request.params.id);
-    db.prepare("DELETE FROM item_preferences WHERE item_id = ? AND reaction IS NULL AND coined = 0").run(request.params.id);
+  if (body.reaction === null) {
+    db.transaction(() => {
+      db.prepare("UPDATE item_preferences SET reaction = NULL, updated_at = ? WHERE item_id = ?").run(timestamp, request.params.id);
+      db.prepare("DELETE FROM item_preferences WHERE item_id = ? AND reaction IS NULL AND coined = 0").run(request.params.id);
+    })();
   } else {
     db.prepare(`
       INSERT INTO item_preferences (item_id, reaction, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(item_id) DO UPDATE SET reaction = excluded.reaction, updated_at = excluded.updated_at
-    `).run(request.params.id, request.body.reaction, timestamp);
-    recordRecommendationSignals(request.params.id, request.body.reaction, 1, timestamp);
+    `).run(request.params.id, body.reaction, timestamp);
+    recordRecommendationSignals(request.params.id, body.reaction, 1, timestamp);
   }
-  return { reaction: request.body.reaction ?? null };
+  return { reaction: body.reaction ?? null };
 });
 
 app.put<{ Params: { id: string }; Body: Record<string, never> | undefined }>("/items/:id/coin", async (request) => {
   const itemId = request.params.id;
-  const current = db.prepare("SELECT coined FROM item_preferences WHERE item_id = ?").get(itemId) as
-    | { coined: number }
-    | undefined;
-  const nextCoined = current?.coined ? 0 : 1;
   const timestamp = nowIso();
+  // 单语句 toggle：用 CASE 翻转当前值，消除 SELECT-then-UPDATE 竞态
   db.prepare(`
-    INSERT INTO item_preferences (item_id, coined, coined_at, updated_at) VALUES (?, ?, ?, ?)
-    ON CONFLICT(item_id) DO UPDATE SET coined = excluded.coined, coined_at = excluded.coined_at, updated_at = excluded.updated_at
-  `).run(itemId, nextCoined, nextCoined ? timestamp : null, timestamp);
-
-  if (nextCoined === 1) {
-    recordRecommendationSignals(itemId, "coin", 1, timestamp);
-  }
-
-  return { coined: Boolean(nextCoined) };
+    INSERT INTO item_preferences (item_id, coined, coined_at, updated_at)
+    VALUES (?, 1, ?, ?)
+    ON CONFLICT(item_id) DO UPDATE SET
+      coined = 1 - item_preferences.coined,
+      coined_at = CASE WHEN 1 - item_preferences.coined = 1 THEN ? ELSE NULL END,
+      updated_at = ?
+  `).run(itemId, timestamp, timestamp, timestamp, timestamp);
+  const current = db.prepare("SELECT coined FROM item_preferences WHERE item_id = ?").get(itemId) as { coined: number } | undefined;
+  const coined = Boolean(current?.coined);
+  if (coined) recordRecommendationSignals(itemId, "coin", 1, timestamp);
+  return { coined };
 });
 
 app.put<{ Params: { id: string }; Body: { followed?: boolean } }>("/creators/:id/follow", async (request, reply) => {
   const exists = db.prepare("SELECT 1 FROM creators WHERE id = ?").get(request.params.id);
   if (!exists) return reply.code(404).send({ error: "Creator not found" });
-  const followed = Boolean(request.body.followed);
+  const body = request.body ?? ({} as typeof request.body);
+  const followed = Boolean(body.followed);
   const current = db.prepare("SELECT blacklisted FROM creator_preferences WHERE creator_id = ?").get(request.params.id) as { blacklisted: number } | undefined;
   if (followed && current?.blacklisted) return reply.code(409).send({ error: "Unblock this creator before following" });
   const timestamp = nowIso();
@@ -652,16 +701,20 @@ app.put<{ Params: { id: string }; Body: { followed?: boolean } }>("/creators/:id
 app.put<{ Params: { id: string }; Body: { blacklisted?: boolean } }>("/creators/:id/blacklist", async (request, reply) => {
   const exists = db.prepare("SELECT 1 FROM creators WHERE id = ?").get(request.params.id);
   if (!exists) return reply.code(404).send({ error: "Creator not found" });
-  const blacklisted = Boolean(request.body.blacklisted);
-  db.prepare(`
-    INSERT INTO creator_preferences (creator_id, blacklisted, followed, followed_at, updated_at) VALUES (?, ?, 0, NULL, ?)
-    ON CONFLICT(creator_id) DO UPDATE SET
-      blacklisted = excluded.blacklisted,
-      followed = CASE WHEN excluded.blacklisted = 1 THEN 0 ELSE creator_preferences.followed END,
-      followed_at = CASE WHEN excluded.blacklisted = 1 THEN NULL ELSE creator_preferences.followed_at END,
-      updated_at = excluded.updated_at
-  `).run(request.params.id, blacklisted ? 1 : 0, nowIso());
-  if (blacklisted) db.prepare("DELETE FROM creator_messages WHERE creator_id = ?").run(request.params.id);
+  const body = request.body ?? ({} as typeof request.body);
+  const blacklisted = Boolean(body.blacklisted);
+  const timestamp = nowIso();
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO creator_preferences (creator_id, blacklisted, followed, followed_at, updated_at) VALUES (?, ?, 0, NULL, ?)
+      ON CONFLICT(creator_id) DO UPDATE SET
+        blacklisted = excluded.blacklisted,
+        followed = CASE WHEN excluded.blacklisted = 1 THEN 0 ELSE creator_preferences.followed END,
+        followed_at = CASE WHEN excluded.blacklisted = 1 THEN NULL ELSE creator_preferences.followed_at END,
+        updated_at = excluded.updated_at
+    `).run(request.params.id, blacklisted ? 1 : 0, timestamp);
+    if (blacklisted) db.prepare("DELETE FROM creator_messages WHERE creator_id = ?").run(request.params.id);
+  })();
   return { blacklisted };
 });
 
@@ -735,12 +788,14 @@ app.get<{ Params: { id: string }; Headers: { range?: string } }>("/media/parts/:
 
   const match = range.match(/bytes=(\d+)-(\d*)/);
   if (!match) {
+    reply.header("Content-Range", `bytes */${total}`);
     return reply.code(416).send();
   }
 
   const start = Number(match[1]);
   const end = Math.min(match[2] ? Number(match[2]) : total - 1, total - 1);
   if (start >= total || end < start) {
+    reply.header("Content-Range", `bytes */${total}`);
     return reply.code(416).send();
   }
   const chunkSize = end - start + 1;
@@ -753,76 +808,89 @@ app.get<{ Params: { id: string }; Headers: { range?: string } }>("/media/parts/:
 });
 
 app.post<{ Params: { id: string }; Body: InteractionBody }>("/items/:id/interactions", async (request, reply) => {
+  const body = request.body ?? ({} as typeof request.body);
   const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(request.params.id) as
     | { id: string; creator_id: string | null; category_id: string | null }
     | undefined;
-  if (!item || !request.body.kind) {
+  if (!item || !body.kind) {
     return reply.code(400).send({ error: "Invalid interaction" });
   }
+  const kind = body.kind;
+  const value = body.value ?? 1;
 
-  const value = request.body.value ?? 1;
-  if (request.body.kind === "finish" || request.body.kind === "watch") {
-    const part = request.body.partId ? db.prepare(`
+  // 预读 + 纯计算（事务外），事务内只做写
+  let part: { id: string; partIndex: number; durationSeconds: number | null; lastPartIndex: number } | undefined;
+  let positionSeconds = 0;
+  let reportedDuration = 0;
+  let finished = false;
+  if (kind === "finish" || kind === "watch") {
+    part = body.partId ? db.prepare(`
       SELECT mp.id, mp.part_index AS partIndex, mp.duration_seconds AS durationSeconds,
         (SELECT MAX(last_part.part_index) FROM media_parts last_part WHERE last_part.item_id = mp.item_id) AS lastPartIndex
       FROM media_parts mp WHERE mp.id = ? AND mp.item_id = ?
-    `).get(request.body.partId, request.params.id) as
+    `).get(body.partId, request.params.id) as
       | { id: string; partIndex: number; durationSeconds: number | null; lastPartIndex: number }
       | undefined : undefined;
     if (!part) return reply.code(400).send({ error: "Invalid media part" });
-    const positionSeconds = Math.max(0, Number(request.body.positionSeconds ?? 0));
-    const reportedDuration = Number(request.body.durationSeconds ?? 0);
+    positionSeconds = Math.max(0, Number(body.positionSeconds ?? 0));
+    reportedDuration = Number(body.durationSeconds ?? 0);
     const durationSeconds = part.durationSeconds && part.durationSeconds > 0 ? part.durationSeconds : reportedDuration;
-    const finished = part.partIndex === part.lastPartIndex
+    finished = part.partIndex === part.lastPartIndex
       && durationSeconds > 0
       && positionSeconds >= durationSeconds * 0.9;
-    const timestamp = nowIso();
-    if ((!part.durationSeconds || part.durationSeconds <= 0) && reportedDuration > 0) {
-      db.prepare("UPDATE media_parts SET duration_seconds = ? WHERE id = ?").run(reportedDuration, part.id);
-    }
-    db.prepare(`
-      INSERT INTO watch_progress (item_id, part_id, position_seconds, finished, started_at, completed_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(item_id) DO UPDATE SET
-        part_id = excluded.part_id,
-        position_seconds = excluded.position_seconds,
-        finished = MAX(watch_progress.finished, excluded.finished),
-        completed_at = CASE
-          WHEN watch_progress.finished = 1 THEN watch_progress.completed_at
-          WHEN excluded.finished = 1 THEN excluded.completed_at
-          ELSE NULL
-        END,
-        updated_at = excluded.updated_at
-    `).run(request.params.id, part.id, positionSeconds, finished ? 1 : 0, timestamp, finished ? timestamp : null, timestamp);
   }
 
-  if (request.body.kind === "blacklist_up" && item.creator_id) {
-    db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(createId("int"), "creator", item.creator_id, "blacklist_up", value, nowIso());
-  } else {
-    db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(createId("int"), "item", request.params.id, request.body.kind, value, nowIso());
-    if ((request.body.kind === "like" || request.body.kind === "dislike") && item.creator_id) {
-      db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(createId("int"), "creator", item.creator_id, request.body.kind, value, nowIso());
+  db.transaction(() => {
+    const timestamp = nowIso();
+    if (part && (kind === "finish" || kind === "watch")) {
+      if ((!part.durationSeconds || part.durationSeconds <= 0) && reportedDuration > 0) {
+        db.prepare("UPDATE media_parts SET duration_seconds = ? WHERE id = ?").run(reportedDuration, part.id);
+      }
+      db.prepare(`
+        INSERT INTO watch_progress (item_id, part_id, position_seconds, finished, started_at, completed_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(item_id) DO UPDATE SET
+          part_id = excluded.part_id,
+          position_seconds = excluded.position_seconds,
+          finished = MAX(watch_progress.finished, excluded.finished),
+          completed_at = CASE
+            WHEN watch_progress.finished = 1 THEN watch_progress.completed_at
+            WHEN excluded.finished = 1 THEN excluded.completed_at
+            ELSE NULL
+          END,
+          updated_at = excluded.updated_at
+      `).run(request.params.id, part.id, positionSeconds, finished ? 1 : 0, timestamp, finished ? timestamp : null, timestamp);
     }
-    if ((request.body.kind === "like" || request.body.kind === "dislike") && item.category_id) {
+
+    if (kind === "blacklist_up" && item.creator_id) {
       db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(createId("int"), "category", item.category_id, request.body.kind, value, nowIso());
+        .run(createId("int"), "creator", item.creator_id, "blacklist_up", value, timestamp);
+    } else {
+      db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(createId("int"), "item", request.params.id, kind, value, timestamp);
+      if ((kind === "like" || kind === "dislike") && item.creator_id) {
+        db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(createId("int"), "creator", item.creator_id, kind, value, timestamp);
+      }
+      if ((kind === "like" || kind === "dislike") && item.category_id) {
+        db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(createId("int"), "category", item.category_id, kind, value, timestamp);
+      }
     }
-  }
+  })();
 
   return { ok: true };
 });
 
 app.post<{ Params: { id: string }; Body: CommentBody }>("/items/:id/comments", async (request, reply) => {
-  const body = request.body.body?.trim();
-  if (!body) {
+  const body = request.body ?? ({} as typeof request.body);
+  const text = body.body?.trim();
+  if (!text) {
     return reply.code(400).send({ error: "Comment cannot be empty" });
   }
   const id = createId("comment");
   db.prepare("INSERT INTO comments (id, item_id, body, at_seconds, created_at) VALUES (?, ?, ?, ?, ?)")
-    .run(id, request.params.id, body, request.body.atSeconds ?? null, nowIso());
+    .run(id, request.params.id, text, body.atSeconds ?? null, nowIso());
   return reply.code(201).send({ id });
 });
 
@@ -838,7 +906,8 @@ app.get("/me/favorites", async () => ({
 }));
 
 app.post<{ Body: FavoriteFolderBody }>("/me/favorites/folders", async (request, reply) => {
-  const name = request.body.name?.trim() ?? "";
+  const body = request.body ?? ({} as typeof request.body);
+  const name = body.name?.trim() ?? "";
   if (!name || name.length > 50) {
     return reply.code(400).send({ error: "Invalid folder name" });
   }
@@ -854,33 +923,38 @@ app.delete<{ Params: { id: string } }>("/me/favorites/folders/:id", async (reque
 });
 
 app.post<{ Params: { id: string }; Body: FavoriteItemBody }>("/items/:id/favorites", async (request, reply) => {
+  const body = request.body ?? ({} as typeof request.body);
   const itemId = request.params.id;
   const item = db.prepare("SELECT id FROM media_items WHERE id = ?").get(itemId);
   if (!item) {
     return reply.code(404).send({ error: "Item not found" });
   }
 
-  let folderId = request.body.folderId;
-  if (!folderId) {
-    const existing = db.prepare("SELECT id FROM favorite_folders LIMIT 1").get() as { id: string } | undefined;
-    if (existing) {
-      folderId = existing.id;
-    } else {
-      folderId = createId("favfolder");
-      db.prepare("INSERT INTO favorite_folders (id, name, created_at) VALUES (?, ?, ?)")
-        .run(folderId, "默认收藏夹", nowIso());
+  const folderId = db.transaction(() => {
+    let resolvedFolderId = body.folderId;
+    if (!resolvedFolderId) {
+      const existing = db.prepare("SELECT id FROM favorite_folders LIMIT 1").get() as { id: string } | undefined;
+      if (existing) {
+        resolvedFolderId = existing.id;
+      } else {
+        resolvedFolderId = createId("favfolder");
+        db.prepare("INSERT INTO favorite_folders (id, name, created_at) VALUES (?, ?, ?)")
+          .run(resolvedFolderId, "默认收藏夹", nowIso());
+      }
     }
-  }
 
-  const favoriteId = createId("fav");
-  const createdAt = nowIso();
-  const result = db.prepare(`
-    INSERT INTO favorites (id, folder_id, item_id, created_at) VALUES (?, ?, ?, ?)
-    ON CONFLICT(folder_id, item_id) DO NOTHING
-  `).run(favoriteId, folderId, itemId, createdAt);
-  if (result.changes > 0) {
-    recordRecommendationSignals(itemId, "favorite", 1, createdAt);
-  }
+    const favoriteId = createId("fav");
+    const createdAt = nowIso();
+    const result = db.prepare(`
+      INSERT INTO favorites (id, folder_id, item_id, created_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(folder_id, item_id) DO NOTHING
+    `).run(favoriteId, resolvedFolderId, itemId, createdAt);
+    if (result.changes > 0) {
+      recordRecommendationSignals(itemId, "favorite", 1, createdAt);
+    }
+    return resolvedFolderId;
+  })();
+
   return reply.code(201).send({ folderId, favorited: true });
 });
 
