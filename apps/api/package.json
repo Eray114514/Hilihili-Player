@@ -17,6 +17,7 @@
     "@hilihili/media": "file:../../packages/media",
     "@hilihili/recommendation": "file:../../packages/recommendation",
     "@hilihili/shared": "file:../../packages/shared",
+    "drizzle-orm": "^0.45.1",
     "fastify": "^5.6.2",
     "mime-types": "^3.0.2",
     "zod": "^4.2.1"

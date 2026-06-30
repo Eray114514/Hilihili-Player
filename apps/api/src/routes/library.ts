@@ -1,14 +1,25 @@
 import { basename, resolve } from "node:path";
 import { existsSync, statSync } from "node:fs";
-import { createId, nowIso } from "@hilihili/db";
+import { createId, libraries, nowIso, scanRuns } from "@hilihili/db";
 import { enqueueScan } from "@hilihili/media";
+import { desc, eq } from "drizzle-orm";
 import { db } from "../lib/db.js";
 import { isPathAllowed } from "../lib/fs-roots.js";
 import { addLibrarySchema, scanRunSchema, type ZodFastifyInstance } from "../lib/types.js";
 
 export async function libraryRoutes(app: ZodFastifyInstance) {
   app.get("/libraries", async () => ({
-    libraries: db.prepare("SELECT id, name, root_path AS rootPath, enabled, created_at AS createdAt FROM libraries ORDER BY created_at DESC").all()
+    // enabled 字段在 schema 中是 boolean mode，JSON 序列化为 true/false（原裸 SQL 返回 0/1）
+    libraries: db.select({
+      id: libraries.id,
+      name: libraries.name,
+      rootPath: libraries.rootPath,
+      enabled: libraries.enabled,
+      createdAt: libraries.createdAt
+    })
+      .from(libraries)
+      .orderBy(desc(libraries.createdAt))
+      .all()
   }));
 
   app.post("/libraries", { schema: { body: addLibrarySchema } }, async (request, reply) => {
@@ -20,11 +31,17 @@ export async function libraryRoutes(app: ZodFastifyInstance) {
 
     const id = createId("lib");
     const name = body.name?.trim() || basename(rootPath) || rootPath;
+    // Drizzle transaction 直接返回回调返回值；enqueueScan 内部用同一个 better-sqlite3 连接，能在事务内看到 INSERT 的效果
     const scanRunId = db.transaction(() => {
-      db.prepare("INSERT INTO libraries (id, name, root_path, enabled, created_at) VALUES (?, ?, ?, 1, ?)")
-        .run(id, name, rootPath, nowIso());
+      db.insert(libraries).values({
+        id,
+        name,
+        rootPath,
+        enabled: true,
+        createdAt: nowIso()
+      }).run();
       return enqueueScan(id);
-    })();
+    });
 
     return reply.code(201).send({ id, name, rootPath, scanRunId });
   });
@@ -36,21 +53,40 @@ export async function libraryRoutes(app: ZodFastifyInstance) {
   });
 
   app.get("/scan/runs", async () => ({
-    runs: db.prepare(`
-      SELECT id, library_id AS libraryId, status, message, started_at AS startedAt, finished_at AS finishedAt,
-        items_indexed AS itemsIndexed, thumbnails_total AS thumbnailsTotal,
-        thumbnails_ready AS thumbnailsReady, thumbnails_failed AS thumbnailsFailed
-      FROM scan_runs ORDER BY started_at DESC LIMIT 20
-    `).all()
+    runs: db.select({
+      id: scanRuns.id,
+      libraryId: scanRuns.libraryId,
+      status: scanRuns.status,
+      message: scanRuns.message,
+      startedAt: scanRuns.startedAt,
+      finishedAt: scanRuns.finishedAt,
+      itemsIndexed: scanRuns.itemsIndexed,
+      thumbnailsTotal: scanRuns.thumbnailsTotal,
+      thumbnailsReady: scanRuns.thumbnailsReady,
+      thumbnailsFailed: scanRuns.thumbnailsFailed
+    })
+      .from(scanRuns)
+      .orderBy(desc(scanRuns.startedAt))
+      .limit(20)
+      .all()
   }));
 
   app.get<{ Params: { id: string } }>("/scan/runs/:id", async (request, reply) => {
-    const run = db.prepare(`
-      SELECT id, library_id AS libraryId, status, message, started_at AS startedAt, finished_at AS finishedAt,
-        items_indexed AS itemsIndexed, thumbnails_total AS thumbnailsTotal,
-        thumbnails_ready AS thumbnailsReady, thumbnails_failed AS thumbnailsFailed
-      FROM scan_runs WHERE id = ?
-    `).get(request.params.id);
+    const run = db.select({
+      id: scanRuns.id,
+      libraryId: scanRuns.libraryId,
+      status: scanRuns.status,
+      message: scanRuns.message,
+      startedAt: scanRuns.startedAt,
+      finishedAt: scanRuns.finishedAt,
+      itemsIndexed: scanRuns.itemsIndexed,
+      thumbnailsTotal: scanRuns.thumbnailsTotal,
+      thumbnailsReady: scanRuns.thumbnailsReady,
+      thumbnailsFailed: scanRuns.thumbnailsFailed
+    })
+      .from(scanRuns)
+      .where(eq(scanRuns.id, request.params.id))
+      .get();
     return run ?? reply.code(404).send({ error: "Scan run not found" });
   });
 }

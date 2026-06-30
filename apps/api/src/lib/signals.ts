@@ -1,38 +1,76 @@
-import { createId, nowIso } from "@hilihili/db";
+import { createId, nowIso, interactions, mediaTags } from "@hilihili/db";
 import type { InteractionKind } from "@hilihili/shared";
+import { eq, sql } from "drizzle-orm";
 import { db } from "./db.js";
 
 export type ItemRef = { id: string; creator_id: string | null; category_id: string | null };
 
-const insertInteractionStmt = db.prepare(
-  "INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-);
-
-const tagStmt = db.prepare(`
-  SELECT tag_id AS tagId, source, sort_order AS sortOrder
-  FROM media_tags WHERE media_item_id = ?
-  ORDER BY CASE source WHEN 'content' THEN 0 WHEN 'creator' THEN 1 WHEN 'category' THEN 2 ELSE 3 END, sort_order ASC
-`);
-
+// Drizzle 的 better-sqlite3 driver 内部仍复用 prepared statement 缓存，
+// 直接 insert 与显式 prepare 性能等价；代码更简洁，故用方案 B。
 export function recordRecommendationSignals(item: ItemRef, kind: InteractionKind, value: number, timestamp = nowIso()) {
   const signalTargets = kind === "like" || kind === "dislike" || kind === "coin" || kind === "favorite";
-  db.transaction(() => {
-    insertInteractionStmt.run(createId("int"), "item", item.id, kind, value, timestamp);
+  // Drizzle 的 transaction 接收 tx 参数并直接返回回调返回值，无需 better-sqlite3 末尾的 () 调用
+  db.transaction((tx) => {
+    tx.insert(interactions).values({
+      id: createId("int"),
+      targetType: "item",
+      targetId: item.id,
+      kind,
+      value,
+      createdAt: timestamp
+    }).run();
     if (signalTargets && item.creator_id) {
-      insertInteractionStmt.run(createId("int"), "creator", item.creator_id, kind, value, timestamp);
+      tx.insert(interactions).values({
+        id: createId("int"),
+        targetType: "creator",
+        targetId: item.creator_id,
+        kind,
+        value,
+        createdAt: timestamp
+      }).run();
     }
     if (signalTargets && item.category_id) {
-      insertInteractionStmt.run(createId("int"), "category", item.category_id, kind, value, timestamp);
+      tx.insert(interactions).values({
+        id: createId("int"),
+        targetType: "category",
+        targetId: item.category_id,
+        kind,
+        value,
+        createdAt: timestamp
+      }).run();
     }
-    const tags = tagStmt.all(item.id) as { tagId: string; source: "legacy" | "category" | "creator" | "content"; sortOrder: number }[];
+    // ORDER BY CASE source ... 用 sql 模板表达，引用 schema 列
+    const tags = tx.select({
+      tagId: mediaTags.tagId,
+      source: mediaTags.source,
+      sortOrder: mediaTags.sortOrder
+    })
+      .from(mediaTags)
+      .where(eq(mediaTags.mediaItemId, item.id))
+      .orderBy(sql`CASE ${mediaTags.source} WHEN 'content' THEN 0 WHEN 'creator' THEN 1 WHEN 'category' THEN 2 ELSE 3 END, ${mediaTags.sortOrder} ASC`)
+      .all();
     for (const tag of tags) {
-      insertInteractionStmt.run(createId("int"), "tag", tag.tagId, kind, value * tagSignalMultiplier(tag.source, tag.sortOrder), timestamp);
+      tx.insert(interactions).values({
+        id: createId("int"),
+        targetType: "tag",
+        targetId: tag.tagId,
+        kind,
+        value: value * tagSignalMultiplier(tag.source, tag.sortOrder),
+        createdAt: timestamp
+      }).run();
     }
-  })();
+  });
 }
 
 export function insertInteraction(targetType: "item" | "creator" | "category" | "tag", targetId: string, kind: InteractionKind, value: number, timestamp: string) {
-  insertInteractionStmt.run(createId("int"), targetType, targetId, kind, value, timestamp);
+  db.insert(interactions).values({
+    id: createId("int"),
+    targetType,
+    targetId,
+    kind,
+    value,
+    createdAt: timestamp
+  }).run();
 }
 
 export function tagSignalMultiplier(source: "legacy" | "category" | "creator" | "content", sortOrder: number) {

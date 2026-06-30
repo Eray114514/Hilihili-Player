@@ -2,6 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { lookup } from "mime-types";
+import { creators, mediaImages, mediaItems, mediaParts, mediaSubtitles } from "@hilihili/db";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "../lib/db.js";
 import { CACHE_DAY, CACHE_HOUR, CACHE_LONG } from "../lib/constants.js";
 
@@ -10,11 +12,15 @@ export async function mediaRoutes(app: FastifyInstance) {
     if (request.params.variant !== "thumbnail" && request.params.variant !== "original") {
       return reply.code(404).send({ error: "Image variant not found" });
     }
-    const row = db.prepare("SELECT path, thumbnail_path FROM media_images WHERE id = ?").get(request.params.id) as
-      | { path: string; thumbnail_path: string | null }
-      | undefined;
-    const selected = request.params.variant === "thumbnail" && row?.thumbnail_path && existsSync(row.thumbnail_path)
-      ? row.thumbnail_path
+    const row = db.select({
+      path: mediaImages.path,
+      thumbnailPath: mediaImages.thumbnailPath
+    })
+      .from(mediaImages)
+      .where(eq(mediaImages.id, request.params.id))
+      .get();
+    const selected = request.params.variant === "thumbnail" && row?.thumbnailPath && existsSync(row.thumbnailPath)
+      ? row.thumbnailPath
       : row?.path && existsSync(row.path) ? row.path : null;
     if (!selected) return reply.code(404).send({ error: "Image not found" });
     reply.header("Content-Type", lookup(selected) || "application/octet-stream");
@@ -24,23 +30,32 @@ export async function mediaRoutes(app: FastifyInstance) {
   });
 
   app.get<{ Params: { id: string } }>("/media/items/:id/cover", async (request, reply) => {
-    const row = db.prepare("SELECT kind, cover_path, generated_cover_path FROM media_items WHERE id = ?").get(request.params.id) as
-      | { kind: string; cover_path: string | null; generated_cover_path: string | null }
-      | undefined;
+    const row = db.select({
+      kind: mediaItems.kind,
+      coverPath: mediaItems.coverPath,
+      generatedCoverPath: mediaItems.generatedCoverPath
+    })
+      .from(mediaItems)
+      .where(eq(mediaItems.id, request.params.id))
+      .get();
     let coverPath: string | null = null;
     // For pure image galleries, serve the first image's (animated) thumbnail instead of the
     // original — much lighter on the feed and preserves animation for animated images.
     if (row?.kind === "image") {
-      const img = db.prepare("SELECT thumbnail_path, path FROM media_images WHERE item_id = ? ORDER BY sort_index ASC LIMIT 1")
-        .get(request.params.id) as { thumbnail_path: string | null; path: string } | undefined;
+      const img = db.select({ thumbnailPath: mediaImages.thumbnailPath, path: mediaImages.path })
+        .from(mediaImages)
+        .where(eq(mediaImages.itemId, request.params.id))
+        .orderBy(asc(mediaImages.sortIndex))
+        .limit(1)
+        .get();
       if (img) {
-        coverPath = img.thumbnail_path && existsSync(img.thumbnail_path) ? img.thumbnail_path : (existsSync(img.path) ? img.path : null);
+        coverPath = img.thumbnailPath && existsSync(img.thumbnailPath) ? img.thumbnailPath : (existsSync(img.path) ? img.path : null);
       }
     }
     if (!coverPath) {
-      coverPath = row?.cover_path && existsSync(row.cover_path)
-        ? row.cover_path
-        : row?.generated_cover_path && existsSync(row.generated_cover_path) ? row.generated_cover_path : null;
+      coverPath = row?.coverPath && existsSync(row.coverPath)
+        ? row.coverPath
+        : row?.generatedCoverPath && existsSync(row.generatedCoverPath) ? row.generatedCoverPath : null;
     }
     if (!coverPath) {
       return reply.code(404).send({ error: "Cover not found" });
@@ -55,9 +70,13 @@ export async function mediaRoutes(app: FastifyInstance) {
     if (request.params.variant !== "avatar" && request.params.variant !== "banner") {
       return reply.code(404).send({ error: "Creator asset not found" });
     }
-    const row = db.prepare("SELECT avatar_path AS avatarPath, banner_path AS bannerPath FROM creators WHERE id = ?").get(request.params.id) as
-      | { avatarPath: string | null; bannerPath: string | null }
-      | undefined;
+    const row = db.select({
+      avatarPath: creators.avatarPath,
+      bannerPath: creators.bannerPath
+    })
+      .from(creators)
+      .where(eq(creators.id, request.params.id))
+      .get();
     const assetPath = request.params.variant === "avatar" ? row?.avatarPath : row?.bannerPath;
     if (!assetPath || !existsSync(assetPath)) return reply.code(404).send({ error: "Creator asset not found" });
     reply.header("Content-Type", lookup(assetPath) || "application/octet-stream");
@@ -67,10 +86,11 @@ export async function mediaRoutes(app: FastifyInstance) {
   });
 
   app.get<{ Params: { id: string } }>("/media/parts/:id/sprite", async (request, reply) => {
-    const row = db.prepare("SELECT preview_sprite_path FROM media_parts WHERE id = ?").get(request.params.id) as
-      | { preview_sprite_path: string | null }
-      | undefined;
-    const spritePath = row?.preview_sprite_path && existsSync(row.preview_sprite_path) ? row.preview_sprite_path : null;
+    const row = db.select({ previewSpritePath: mediaParts.previewSpritePath })
+      .from(mediaParts)
+      .where(eq(mediaParts.id, request.params.id))
+      .get();
+    const spritePath = row?.previewSpritePath && existsSync(row.previewSpritePath) ? row.previewSpritePath : null;
     if (!spritePath) {
       return reply.code(404).send({ error: "Preview sprite not found" });
     }
@@ -80,8 +100,10 @@ export async function mediaRoutes(app: FastifyInstance) {
   });
 
   app.get<{ Params: { id: string; subId: string } }>("/media/parts/:id/subtitles/:subId", async (request, reply) => {
-    const row = db.prepare("SELECT path FROM media_subtitles WHERE id = ? AND part_id = ?")
-      .get(request.params.subId, request.params.id) as { path: string } | undefined;
+    const row = db.select({ path: mediaSubtitles.path })
+      .from(mediaSubtitles)
+      .where(and(eq(mediaSubtitles.id, request.params.subId), eq(mediaSubtitles.partId, request.params.id)))
+      .get();
     if (!row || !existsSync(row.path)) {
       return reply.code(404).send({ error: "Subtitle not found" });
     }
@@ -95,14 +117,15 @@ export async function mediaRoutes(app: FastifyInstance) {
   });
 
   app.get<{ Params: { id: string }; Headers: { range?: string } }>("/media/parts/:id/stream", async (request, reply) => {
-    const row = db.prepare("SELECT path, stream_path FROM media_parts WHERE id = ?").get(request.params.id) as
-      | { path: string; stream_path: string | null }
-      | undefined;
+    const row = db.select({ path: mediaParts.path, streamPath: mediaParts.streamPath })
+      .from(mediaParts)
+      .where(eq(mediaParts.id, request.params.id))
+      .get();
     if (!row || !existsSync(row.path)) {
       return reply.code(404).send({ error: "Media part not found" });
     }
 
-    const mediaPath = row.stream_path && existsSync(row.stream_path) ? row.stream_path : row.path;
+    const mediaPath = row.streamPath && existsSync(row.streamPath) ? row.streamPath : row.path;
     const total = statSync(mediaPath).size;
     const range = request.headers.range;
     const contentType = lookup(extname(mediaPath)) || "application/octet-stream";

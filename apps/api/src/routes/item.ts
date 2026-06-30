@@ -1,6 +1,7 @@
-import { createId, nowIso } from "@hilihili/db";
+import { createId, nowIso, categories, comments, creatorPreferences, creators, favoriteFolders, favorites, interactions, itemPreferences, mediaImages, mediaItems, mediaParts, mediaSubtitles, watchProgress } from "@hilihili/db";
 import { addManualTagToItem, listItemTags, removeTagFromItem } from "@hilihili/media";
 import { getRecommendedFeed } from "@hilihili/recommendation";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../lib/db.js";
 import { recordRecommendationSignals } from "../lib/signals.js";
 import {
@@ -16,31 +17,89 @@ import {
 
 export async function itemRoutes(app: ZodFastifyInstance) {
   app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
-    const item = db.prepare(`
-      SELECT mi.*, c.name AS categoryName, cr.name AS creatorName, cr.alias AS creatorAlias,
-        CASE WHEN cr.avatar_path IS NOT NULL THEN '/media/creators/' || cr.id || '/avatar' ELSE NULL END AS creatorAvatarUrl,
-        ip.reaction, ip.coined, ip.coined_at AS coinedAt,
-        COALESCE(cp.blacklisted, 0) AS creatorBlacklisted,
-        wp.part_id AS resumePartId, wp.position_seconds AS resumePositionSeconds
-      FROM media_items mi
-      LEFT JOIN categories c ON c.id = mi.category_id
-      LEFT JOIN creators cr ON cr.id = mi.creator_id
-      LEFT JOIN item_preferences ip ON ip.item_id = mi.id
-      LEFT JOIN creator_preferences cp ON cp.creator_id = mi.creator_id
-      LEFT JOIN watch_progress wp ON wp.item_id = mi.id
-      WHERE mi.id = ?
-    `).get(request.params.id);
+    // 保留原 mi.* 的 snake_case wire format（web 的 ItemDetail 类型按 snake_case 读取 post_body/creator_id 等）
+    // 用 Drizzle 链式 + 显式别名让类型从 schema 推导，同时不改变 JSON 字段名
+    const item = db.select({
+      id: mediaItems.id,
+      kind: mediaItems.kind,
+      title: mediaItems.title,
+      post_body: mediaItems.postBody,
+      description: mediaItems.description,
+      library_id: mediaItems.libraryId,
+      category_id: mediaItems.categoryId,
+      creator_id: mediaItems.creatorId,
+      source_path: mediaItems.sourcePath,
+      relative_path: mediaItems.relativePath,
+      folder_path: mediaItems.folderPath,
+      fingerprint: mediaItems.fingerprint,
+      cover_path: mediaItems.coverPath,
+      generated_cover_path: mediaItems.generatedCoverPath,
+      thumbnail_status: mediaItems.thumbnailStatus,
+      thumbnail_error: mediaItems.thumbnailError,
+      content_published_at: mediaItems.contentPublishedAt,
+      file_modified_at: mediaItems.fileModifiedAt,
+      hidden: mediaItems.hidden,
+      structure_status: mediaItems.structureStatus,
+      first_seen_at: mediaItems.firstSeenAt,
+      last_scanned_at: mediaItems.lastScannedAt,
+      updated_at: mediaItems.updatedAt,
+      categoryName: categories.name,
+      creatorName: creators.name,
+      creatorAlias: creators.alias,
+      creatorAvatarUrl: sql<string | null>`CASE WHEN ${creators.avatarPath} IS NOT NULL THEN '/media/creators/' || ${creators.id} || '/avatar' ELSE NULL END`,
+      reaction: itemPreferences.reaction,
+      coined: itemPreferences.coined,
+      coinedAt: itemPreferences.coinedAt,
+      creatorBlacklisted: sql<number>`COALESCE(${creatorPreferences.blacklisted}, 0)`,
+      resumePartId: watchProgress.partId,
+      resumePositionSeconds: watchProgress.positionSeconds
+    })
+      .from(mediaItems)
+      .leftJoin(categories, eq(categories.id, mediaItems.categoryId))
+      .leftJoin(creators, eq(creators.id, mediaItems.creatorId))
+      .leftJoin(itemPreferences, eq(itemPreferences.itemId, mediaItems.id))
+      .leftJoin(creatorPreferences, eq(creatorPreferences.creatorId, mediaItems.creatorId))
+      .leftJoin(watchProgress, eq(watchProgress.itemId, mediaItems.id))
+      .where(eq(mediaItems.id, request.params.id))
+      .get();
     if (!item) {
       return reply.code(404).send({ error: "Item not found" });
     }
 
+    // parts + subtitles 一次 JOIN 查询后按 part 分组（保持原行为）
+    const joinRows = db.select({
+      id: mediaParts.id,
+      title: mediaParts.title,
+      partIndex: mediaParts.partIndex,
+      sizeBytes: mediaParts.sizeBytes,
+      durationSeconds: mediaParts.durationSeconds,
+      compatibilityStatus: mediaParts.compatibilityStatus,
+      compatibilityError: mediaParts.compatibilityError,
+      previewSpritePath: mediaParts.previewSpritePath,
+      previewSpriteCols: mediaParts.previewSpriteCols,
+      previewSpriteRows: mediaParts.previewSpriteRows,
+      previewSpriteInterval: mediaParts.previewSpriteInterval,
+      previewThumbW: mediaParts.previewThumbW,
+      previewThumbH: mediaParts.previewThumbH,
+      subtitleId: mediaSubtitles.id,
+      subtitleLanguage: mediaSubtitles.language,
+      subtitleLabel: mediaSubtitles.label,
+      subtitleIsDefault: mediaSubtitles.isDefault,
+      subtitleSortIndex: mediaSubtitles.sortIndex
+    })
+      .from(mediaParts)
+      .leftJoin(mediaSubtitles, eq(mediaSubtitles.partId, mediaParts.id))
+      .where(eq(mediaParts.itemId, request.params.id))
+      .orderBy(asc(mediaParts.partIndex), asc(mediaSubtitles.sortIndex))
+      .all();
+    // 把 JOIN 出的扁平行按 part 分组，subtitles 嵌套进对应 part（2 次查询合并为 1 次）
     type PartRow = {
       id: string;
       title: string;
       partIndex: number;
       sizeBytes: number;
       durationSeconds: number | null;
-      compatibilityStatus: string;
+      compatibilityStatus: "pending" | "ready" | "failed";
       compatibilityError: string | null;
       previewSpritePath: string | null;
       previewSpriteCols: number | null;
@@ -48,34 +107,10 @@ export async function itemRoutes(app: ZodFastifyInstance) {
       previewSpriteInterval: number | null;
       previewThumbW: number | null;
       previewThumbH: number | null;
+      subtitles: { id: string; language: string; label: string; isDefault: boolean; url: string }[];
     };
     type Subtitle = { id: string; language: string; label: string; isDefault: boolean; url: string };
-    const joinRows = db.prepare(`
-      SELECT mp.id, mp.title, mp.part_index AS partIndex, mp.size_bytes AS sizeBytes,
-        mp.duration_seconds AS durationSeconds,
-        mp.compatibility_status AS compatibilityStatus,
-        mp.compatibility_error AS compatibilityError,
-        mp.preview_sprite_path AS previewSpritePath,
-        mp.preview_sprite_cols AS previewSpriteCols,
-        mp.preview_sprite_rows AS previewSpriteRows,
-        mp.preview_sprite_interval AS previewSpriteInterval,
-        mp.preview_thumb_w AS previewThumbW,
-        mp.preview_thumb_h AS previewThumbH,
-        ms.id AS subtitleId, ms.language AS subtitleLanguage, ms.label AS subtitleLabel,
-        ms.is_default AS subtitleIsDefault, ms.sort_index AS subtitleSortIndex
-      FROM media_parts mp
-      LEFT JOIN media_subtitles ms ON ms.part_id = mp.id
-      WHERE mp.item_id = ?
-      ORDER BY mp.part_index ASC, ms.sort_index ASC
-    `).all(request.params.id) as (PartRow & {
-      subtitleId: string | null;
-      subtitleLanguage: string | null;
-      subtitleLabel: string | null;
-      subtitleIsDefault: number | null;
-      subtitleSortIndex: number | null;
-    })[];
-    // 把 JOIN 出的扁平行按 part 分组，subtitles 嵌套进对应 part（2 次查询合并为 1 次）
-    const partsWithSubtitles: (PartRow & { subtitles: Subtitle[] })[] = [];
+    const partsWithSubtitles: PartRow[] = [];
     const partIndexById = new Map<string, number>();
     for (const row of joinRows) {
       let idx = partIndexById.get(row.id);
@@ -100,22 +135,40 @@ export async function itemRoutes(app: ZodFastifyInstance) {
         });
       }
       if (row.subtitleId) {
-        partsWithSubtitles[idx].subtitles.push({
+        const subtitle: Subtitle = {
           id: row.subtitleId,
           language: row.subtitleLanguage ?? "",
           label: row.subtitleLabel ?? "",
           isDefault: Boolean(row.subtitleIsDefault),
           url: `/media/parts/${row.id}/subtitles/${row.subtitleId}`
-        });
+        };
+        partsWithSubtitles[idx].subtitles.push(subtitle);
       }
     }
 
-    const comments = db.prepare("SELECT id, body, at_seconds AS atSeconds, created_at AS createdAt FROM comments WHERE item_id = ? ORDER BY created_at DESC")
-      .all(request.params.id);
-    const images = db.prepare(`
-      SELECT id, sort_index AS sortIndex, width, height, is_animated AS isAnimated, frame_count AS frameCount, duration_ms AS durationMs
-      FROM media_images WHERE item_id = ? ORDER BY sort_index ASC
-    `).all(request.params.id) as { id: string; sortIndex: number; width: number | null; height: number | null; isAnimated: number | null; frameCount: number | null; durationMs: number | null }[];
+    const commentsRows = db.select({
+      id: comments.id,
+      body: comments.body,
+      atSeconds: comments.atSeconds,
+      createdAt: comments.createdAt
+    })
+      .from(comments)
+      .where(eq(comments.itemId, request.params.id))
+      .orderBy(sql`${comments.createdAt} DESC`)
+      .all();
+    const images = db.select({
+      id: mediaImages.id,
+      sortIndex: mediaImages.sortIndex,
+      width: mediaImages.width,
+      height: mediaImages.height,
+      isAnimated: mediaImages.isAnimated,
+      frameCount: mediaImages.frameCount,
+      durationMs: mediaImages.durationMs
+    })
+      .from(mediaImages)
+      .where(eq(mediaImages.itemId, request.params.id))
+      .orderBy(asc(mediaImages.sortIndex))
+      .all();
     const imageAssets = images.map((image) => ({
       ...image,
       isAnimated: Boolean(image.isAnimated),
@@ -124,10 +177,14 @@ export async function itemRoutes(app: ZodFastifyInstance) {
     }));
     const tagDetails = listItemTags(request.params.id);
     const related = getRecommendedFeed({ limit: 12, seed: request.params.id, includeFinished: false, excludeId: request.params.id });
-    const favoritedFolderIds = db.prepare("SELECT folder_id AS folderId FROM favorites WHERE item_id = ?")
-      .all(request.params.id).map((row: any) => row.folderId);
+    // 消除原 (row: any) => row.folderId 的 any 断言：Drizzle 推导出 { folderId: string }[]
+    const favoritedFolderIds = db.select({ folderId: favorites.folderId })
+      .from(favorites)
+      .where(eq(favorites.itemId, request.params.id))
+      .all()
+      .map((row) => row.folderId);
 
-    return { item, parts: partsWithSubtitles, images: imageAssets, tags: tagDetails.map((tag) => tag.name), tagDetails, comments, related, favoritedFolderIds };
+    return { item, parts: partsWithSubtitles, images: imageAssets, tags: tagDetails.map((tag) => tag.name), tagDetails, comments: commentsRows, related, favoritedFolderIds };
   });
 
   app.post("/items/:id/tags", { schema: { params: idParamSchema, body: tagSchema } }, async (request, reply) => {
@@ -155,19 +212,33 @@ export async function itemRoutes(app: ZodFastifyInstance) {
     const body = request.body;
     const timestamp = nowIso();
     if (body.reaction === null) {
-      db.transaction(() => {
-        db.prepare("UPDATE item_preferences SET reaction = NULL, updated_at = ? WHERE item_id = ?").run(timestamp, request.params.id);
-        db.prepare("DELETE FROM item_preferences WHERE item_id = ? AND reaction IS NULL AND coined = 0").run(request.params.id);
-      })();
+      db.transaction((tx) => {
+        tx.update(itemPreferences).set({ reaction: null, updatedAt: timestamp }).where(eq(itemPreferences.itemId, request.params.id)).run();
+        tx.delete(itemPreferences).where(and(eq(itemPreferences.itemId, request.params.id), sql`${itemPreferences.reaction} IS NULL`, eq(itemPreferences.coined, false))).run();
+      });
     } else {
-      const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(request.params.id) as
-        | { id: string; creator_id: string | null; category_id: string | null }
-        | undefined;
+      const item = db.select({
+        id: mediaItems.id,
+        creator_id: mediaItems.creatorId,
+        category_id: mediaItems.categoryId
+      })
+        .from(mediaItems)
+        .where(eq(mediaItems.id, request.params.id))
+        .get();
       if (!item) return reply.code(404).send({ error: "Item not found" });
-      db.prepare(`
-        INSERT INTO item_preferences (item_id, reaction, updated_at) VALUES (?, ?, ?)
-        ON CONFLICT(item_id) DO UPDATE SET reaction = excluded.reaction, updated_at = excluded.updated_at
-      `).run(request.params.id, body.reaction, timestamp);
+      db.insert(itemPreferences).values({
+        itemId: request.params.id,
+        reaction: body.reaction,
+        updatedAt: timestamp
+      })
+        .onConflictDoUpdate({
+          target: itemPreferences.itemId,
+          set: {
+            reaction: sql`excluded.reaction`,
+            updatedAt: sql`excluded.updated_at`
+          }
+        })
+        .run();
       recordRecommendationSignals(item, body.reaction, 1, timestamp);
     }
     return { reaction: body.reaction ?? null };
@@ -176,20 +247,35 @@ export async function itemRoutes(app: ZodFastifyInstance) {
   app.patch("/items/:id/coin", { schema: { params: idParamSchema, body: emptySchema } }, async (request, reply) => {
     const itemId = request.params.id;
     const timestamp = nowIso();
-    const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(itemId) as
-      | { id: string; creator_id: string | null; category_id: string | null }
-      | undefined;
+    const item = db.select({
+      id: mediaItems.id,
+      creator_id: mediaItems.creatorId,
+      category_id: mediaItems.categoryId
+    })
+      .from(mediaItems)
+      .where(eq(mediaItems.id, itemId))
+      .get();
     if (!item) return reply.code(404).send({ error: "Item not found" });
     // 单语句 toggle：用 CASE 翻转当前值，消除 SELECT-then-UPDATE 竞态
-    db.prepare(`
-      INSERT INTO item_preferences (item_id, coined, coined_at, updated_at)
-      VALUES (?, 1, ?, ?)
-      ON CONFLICT(item_id) DO UPDATE SET
-        coined = 1 - item_preferences.coined,
-        coined_at = CASE WHEN 1 - item_preferences.coined = 1 THEN ? ELSE NULL END,
-        updated_at = ?
-    `).run(itemId, timestamp, timestamp, timestamp, timestamp);
-    const current = db.prepare("SELECT coined FROM item_preferences WHERE item_id = ?").get(itemId) as { coined: number } | undefined;
+    db.insert(itemPreferences).values({
+      itemId,
+      coined: true,
+      coinedAt: timestamp,
+      updatedAt: timestamp
+    })
+      .onConflictDoUpdate({
+        target: itemPreferences.itemId,
+        set: {
+          coined: sql`1 - ${itemPreferences.coined}`,
+          coinedAt: sql`CASE WHEN 1 - ${itemPreferences.coined} = 1 THEN ${timestamp} ELSE NULL END`,
+          updatedAt: timestamp
+        }
+      })
+      .run();
+    const current = db.select({ coined: itemPreferences.coined })
+      .from(itemPreferences)
+      .where(eq(itemPreferences.itemId, itemId))
+      .get();
     const coined = Boolean(current?.coined);
     if (coined) recordRecommendationSignals(item, "coin", 1, timestamp);
     return { coined };
@@ -197,9 +283,14 @@ export async function itemRoutes(app: ZodFastifyInstance) {
 
   app.post("/items/:id/interactions", { schema: { params: idParamSchema, body: interactionSchema } }, async (request, reply) => {
     const body = request.body;
-    const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(request.params.id) as
-      | { id: string; creator_id: string | null; category_id: string | null }
-      | undefined;
+    const item = db.select({
+      id: mediaItems.id,
+      creator_id: mediaItems.creatorId,
+      category_id: mediaItems.categoryId
+    })
+      .from(mediaItems)
+      .where(eq(mediaItems.id, request.params.id))
+      .get();
     if (!item) {
       return reply.code(400).send({ error: "Invalid interaction" });
     }
@@ -212,13 +303,18 @@ export async function itemRoutes(app: ZodFastifyInstance) {
     let reportedDuration = 0;
     let finished = false;
     if (kind === "finish" || kind === "watch") {
-      part = body.partId ? db.prepare(`
-        SELECT mp.id, mp.part_index AS partIndex, mp.duration_seconds AS durationSeconds,
-          (SELECT MAX(last_part.part_index) FROM media_parts last_part WHERE last_part.item_id = mp.item_id) AS lastPartIndex
-        FROM media_parts mp WHERE mp.id = ? AND mp.item_id = ?
-      `).get(body.partId, request.params.id) as
-        | { id: string; partIndex: number; durationSeconds: number | null; lastPartIndex: number }
-        | undefined : undefined;
+      if (body.partId) {
+        const partRow = db.select({
+          id: mediaParts.id,
+          partIndex: mediaParts.partIndex,
+          durationSeconds: mediaParts.durationSeconds,
+          lastPartIndex: sql<number>`(SELECT MAX(${mediaParts.partIndex}) FROM media_parts last_part WHERE last_part.${mediaParts.itemId} = ${mediaParts.itemId})`
+        })
+          .from(mediaParts)
+          .where(and(eq(mediaParts.id, body.partId), eq(mediaParts.itemId, request.params.id)))
+          .get();
+        part = partRow;
+      }
       if (!part) return reply.code(400).send({ error: "Invalid media part" });
       positionSeconds = Math.max(0, Number(body.positionSeconds ?? 0));
       reportedDuration = Number(body.durationSeconds ?? 0);
@@ -228,44 +324,74 @@ export async function itemRoutes(app: ZodFastifyInstance) {
         && positionSeconds >= durationSeconds * 0.9;
     }
 
-    db.transaction(() => {
+    db.transaction((tx) => {
       const timestamp = nowIso();
       if (part && (kind === "finish" || kind === "watch")) {
         if ((!part.durationSeconds || part.durationSeconds <= 0) && reportedDuration > 0) {
-          db.prepare("UPDATE media_parts SET duration_seconds = ? WHERE id = ?").run(reportedDuration, part.id);
+          tx.update(mediaParts).set({ durationSeconds: reportedDuration }).where(eq(mediaParts.id, part.id)).run();
         }
-        db.prepare(`
-          INSERT INTO watch_progress (item_id, part_id, position_seconds, finished, started_at, completed_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(item_id) DO UPDATE SET
-            part_id = excluded.part_id,
-            position_seconds = excluded.position_seconds,
-            finished = MAX(watch_progress.finished, excluded.finished),
-            completed_at = CASE
-              WHEN watch_progress.finished = 1 THEN watch_progress.completed_at
-              WHEN excluded.finished = 1 THEN excluded.completed_at
-              ELSE NULL
-            END,
-            updated_at = excluded.updated_at
-        `).run(request.params.id, part.id, positionSeconds, finished ? 1 : 0, timestamp, finished ? timestamp : null, timestamp);
+        tx.insert(watchProgress).values({
+          itemId: request.params.id,
+          partId: part.id,
+          positionSeconds,
+          finished,
+          startedAt: timestamp,
+          completedAt: finished ? timestamp : null,
+          updatedAt: timestamp
+        })
+          .onConflictDoUpdate({
+            target: watchProgress.itemId,
+            set: {
+              partId: sql`excluded.part_id`,
+              positionSeconds: sql`excluded.position_seconds`,
+              finished: sql`MAX(${watchProgress.finished}, excluded.finished)`,
+              completedAt: sql`CASE WHEN ${watchProgress.finished} = 1 THEN ${watchProgress.completedAt} WHEN excluded.finished = 1 THEN excluded.completed_at ELSE NULL END`,
+              updatedAt: sql`excluded.updated_at`
+            }
+          })
+          .run();
       }
 
       if (kind === "blacklist_up" && item.creator_id) {
-        db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-          .run(createId("int"), "creator", item.creator_id, "blacklist_up", value, timestamp);
+        tx.insert(interactions).values({
+          id: createId("int"),
+          targetType: "creator",
+          targetId: item.creator_id,
+          kind: "blacklist_up",
+          value,
+          createdAt: timestamp
+        }).run();
       } else {
-        db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-          .run(createId("int"), "item", request.params.id, kind, value, timestamp);
+        tx.insert(interactions).values({
+          id: createId("int"),
+          targetType: "item",
+          targetId: request.params.id,
+          kind,
+          value,
+          createdAt: timestamp
+        }).run();
         if ((kind === "like" || kind === "dislike") && item.creator_id) {
-          db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-            .run(createId("int"), "creator", item.creator_id, kind, value, timestamp);
+          tx.insert(interactions).values({
+            id: createId("int"),
+            targetType: "creator",
+            targetId: item.creator_id,
+            kind,
+            value,
+            createdAt: timestamp
+          }).run();
         }
         if ((kind === "like" || kind === "dislike") && item.category_id) {
-          db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-            .run(createId("int"), "category", item.category_id, kind, value, timestamp);
+          tx.insert(interactions).values({
+            id: createId("int"),
+            targetType: "category",
+            targetId: item.category_id,
+            kind,
+            value,
+            createdAt: timestamp
+          }).run();
         }
       }
-    })();
+    });
 
     return { ok: true };
   });
@@ -277,60 +403,77 @@ export async function itemRoutes(app: ZodFastifyInstance) {
       return reply.code(400).send({ error: "Comment cannot be empty" });
     }
     const id = createId("comment");
-    db.prepare("INSERT INTO comments (id, item_id, body, at_seconds, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(id, request.params.id, text, body.atSeconds ?? null, nowIso());
+    db.insert(comments).values({
+      id,
+      itemId: request.params.id,
+      body: text,
+      atSeconds: body.atSeconds ?? null,
+      createdAt: nowIso()
+    }).run();
     return reply.code(201).send({ id });
   });
 
   app.post("/items/:id/favorites", { schema: { params: idParamSchema, body: favoriteItemSchema } }, async (request, reply) => {
     const body = request.body;
     const itemId = request.params.id;
-    const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(itemId) as
-      | { id: string; creator_id: string | null; category_id: string | null }
-      | undefined;
+    const item = db.select({
+      id: mediaItems.id,
+      creator_id: mediaItems.creatorId,
+      category_id: mediaItems.categoryId
+    })
+      .from(mediaItems)
+      .where(eq(mediaItems.id, itemId))
+      .get();
     if (!item) {
       return reply.code(404).send({ error: "Item not found" });
     }
 
-    const folderId = db.transaction(() => {
+    const folderId = db.transaction((tx) => {
       let resolvedFolderId = body.folderId;
       if (!resolvedFolderId) {
-        const existing = db.prepare("SELECT id FROM favorite_folders LIMIT 1").get() as { id: string } | undefined;
+        const existing = tx.select({ id: favoriteFolders.id }).from(favoriteFolders).limit(1).get();
         if (existing) {
           resolvedFolderId = existing.id;
         } else {
           resolvedFolderId = createId("favfolder");
-          db.prepare("INSERT INTO favorite_folders (id, name, created_at) VALUES (?, ?, ?)")
-            .run(resolvedFolderId, "默认收藏夹", nowIso());
+          tx.insert(favoriteFolders).values({
+            id: resolvedFolderId,
+            name: "默认收藏夹",
+            createdAt: nowIso()
+          }).run();
         }
       }
 
       const favoriteId = createId("fav");
       const createdAt = nowIso();
-      const result = db.prepare(`
-        INSERT INTO favorites (id, folder_id, item_id, created_at) VALUES (?, ?, ?, ?)
-        ON CONFLICT(folder_id, item_id) DO NOTHING
-      `).run(favoriteId, resolvedFolderId, itemId, createdAt);
+      const result = tx.insert(favorites).values({
+        id: favoriteId,
+        folderId: resolvedFolderId,
+        itemId,
+        createdAt
+      })
+        .onConflictDoNothing()
+        .run();
       if (result.changes > 0) {
         recordRecommendationSignals(item, "favorite", 1, createdAt);
       }
       return resolvedFolderId;
-    })();
+    });
 
     return reply.code(201).send({ folderId, favorited: true });
   });
 
   app.delete<{ Params: { id: string }; Querystring: { folderId?: string } }>("/items/:id/favorites", async (request) => {
     if (request.query.folderId) {
-      db.prepare("DELETE FROM favorites WHERE item_id = ? AND folder_id = ?").run(request.params.id, request.query.folderId);
+      db.delete(favorites).where(and(eq(favorites.itemId, request.params.id), eq(favorites.folderId, request.query.folderId))).run();
     } else {
-      db.prepare("DELETE FROM favorites WHERE item_id = ?").run(request.params.id);
+      db.delete(favorites).where(eq(favorites.itemId, request.params.id)).run();
     }
     return { ok: true };
   });
 
   app.delete<{ Params: { id: string } }>("/items/:id/watch-progress", async (request) => {
-    db.prepare("DELETE FROM watch_progress WHERE item_id = ?").run(request.params.id);
+    db.delete(watchProgress).where(eq(watchProgress.itemId, request.params.id)).run();
     return { ok: true };
   });
 }

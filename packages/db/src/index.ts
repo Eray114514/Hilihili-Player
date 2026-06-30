@@ -6,6 +6,9 @@ import { ulid } from "ulid";
 import type { SearchHistoryItem } from "@hilihili/shared";
 import * as schema from "./schema.js";
 
+// 重新导出 schema 让上层（apps/api）按字段名引用表，避免 SQL 字符串与 schema 脱节
+export * from "./schema.js";
+
 let sqlite: Database.Database | null = null;
 
 export function getDataDir() {
