@@ -149,7 +149,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         const base = assetUrl(track.url);
         if (!base) continue;
         try {
-          const response = await fetch(base, { cache: "no-store" });
+          const response = await fetch(base);
           if (!response.ok) continue;
           const text = decodeSubtitle(await response.arrayBuffer());
           rawMap.set(track.id, text);
@@ -171,7 +171,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
       }
     };
     void load();
-    timer = window.setInterval(load, 5000);
+    timer = window.setInterval(load, 60000);
     return () => {
       ignore = true;
       if (timer) window.clearInterval(timer);

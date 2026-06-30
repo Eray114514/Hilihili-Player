@@ -1,7 +1,8 @@
 "use client";
 
-import { Ban, Check, CircleDollarSign, MoreHorizontal, Plus, Send, Star, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { Ban, Check, CircleDollarSign, LoaderCircle, MoreHorizontal, Plus, Send, Star, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { FormEvent, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
@@ -9,11 +10,17 @@ import type { KeyedMutator } from "swr";
 import { AppShell } from "@/components/AppShell";
 import { ErrorFallback } from "@/components/ErrorFallback";
 import { CompactVideoCard } from "@/components/VideoCard";
-import { VideoPlayer } from "@/components/VideoPlayer";
 import { CreatorAvatar } from "@/components/CreatorAvatar";
 import { deleteJson, patchJson, postJson, putJson, useApi, type FavoriteFolder, type ItemDetail } from "@/lib/api";
 import { fadeIn, pop, scaleIn, slideDown } from "@/lib/motion";
 import type { Reaction } from "@hilihili/shared";
+
+// VideoPlayer 是重型组件（motion/react + player/ 子组件 + 字幕逻辑），仅在 watch 页用到。
+// 用 next/dynamic 拆成单独 chunk 并 ssr: false（纯客户端组件，无需 SSR）。
+const VideoPlayer = dynamic(() => import("@/components/VideoPlayer").then((m) => m.VideoPlayer), {
+  ssr: false,
+  loading: () => <div className="grid aspect-video place-items-center rounded-xl bg-white/5 text-white/55"><LoaderCircle className="animate-spin" size={32} /></div>
+});
 
 export default function WatchPage() {
   const params = useParams<{ id: string }>();

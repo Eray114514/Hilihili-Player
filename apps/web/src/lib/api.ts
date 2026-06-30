@@ -1,7 +1,7 @@
 import type { DirectoryEntry, FeedItem, Library, Reaction, ScanRun, SearchHistoryItem, ThumbnailStatus } from "@hilihili/shared";
 import useSWR, { type SWRConfiguration } from "swr";
 
-function getApiBase() {
+export function getApiBase() {
   if (typeof window !== "undefined") {
     // 浏览器端沿用当前主机，端口取公开配置，兼容局域网访问与安全演示。
     const { protocol, hostname } = window.location;

@@ -1,16 +1,25 @@
 "use client";
 
-import { ArrowLeft, ImageIcon, Play } from "lucide-react";
+import { ArrowLeft, ImageIcon, LoaderCircle, Play } from "lucide-react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { useState } from "react";
 import { AnimatePresence } from "motion/react";
 import { AppShell } from "@/components/AppShell";
 import { CreatorAvatar } from "@/components/CreatorAvatar";
-import { ImageLightbox } from "@/components/ImageLightbox";
 import { ImageMosaic } from "@/components/ImageMosaic";
-import { VideoPlayer } from "@/components/VideoPlayer";
 import { useApi, type ItemDetail } from "@/lib/api";
+
+// VideoPlayer 重型组件 + ImageLightbox 仅点击图片时用，拆成单独 chunk 并 ssr: false（纯客户端组件）。
+const VideoPlayer = dynamic(() => import("@/components/VideoPlayer").then((m) => m.VideoPlayer), {
+  ssr: false,
+  loading: () => <div className="grid aspect-video place-items-center rounded-xl bg-white/5 text-white/55"><LoaderCircle className="animate-spin" size={32} /></div>
+});
+const ImageLightbox = dynamic(() => import("@/components/ImageLightbox").then((m) => m.ImageLightbox), {
+  ssr: false,
+  loading: () => null
+});
 
 export default function DynamicDetailPage() {
   const params = useParams<{ id: string }>();
