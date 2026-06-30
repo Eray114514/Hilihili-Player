@@ -7,7 +7,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { ApiImage } from "@/components/ApiImage";
 import { AppShell } from "@/components/AppShell";
-import { assetUrl, deleteJson, getJson, putJson, type ActivityEntry, type ActivityResponse } from "@/lib/api";
+import { assetUrl, deleteJson, getJson, patchJson, putJson, type ActivityEntry, type ActivityResponse } from "@/lib/api";
 import { slideUp } from "@/lib/motion";
 
 type ActivityTab = "continue" | "history" | "completed" | "likes" | "coins";
@@ -70,7 +70,7 @@ function HistoryPageInner() {
   async function uncoin(entry: ActivityEntry) {
     setBusyId(entry.item.id);
     try {
-      await putJson(`/items/${entry.item.id}/coin`, {});
+      await patchJson(`/items/${entry.item.id}/coin`, {});
       await load();
     } finally {
       setBusyId(null);

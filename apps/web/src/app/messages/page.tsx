@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { ApiImage } from "@/components/ApiImage";
 import { CreatorAvatar } from "@/components/CreatorAvatar";
-import { assetUrl, getJson, putJson, type MessageResponse } from "@/lib/api";
+import { assetUrl, getJson, postJson, type MessageResponse } from "@/lib/api";
 
 export default function MessagesPage() {
   const [data, setData] = useState<MessageResponse | null>(null);
@@ -14,7 +14,7 @@ export default function MessagesPage() {
 
   useEffect(() => {
     let ignore = false;
-    void putJson("/me/messages/read", {}).then(() => getJson<MessageResponse>("/me/messages?limit=80"))
+    void postJson("/me/messages:read", {}).then(() => getJson<MessageResponse>("/me/messages?limit=80"))
       .then((response) => { if (!ignore) setData(response); })
       .catch(() => { if (!ignore) setFailed(true); });
     return () => { ignore = true; };

@@ -155,18 +155,26 @@ export async function itemRoutes(app: FastifyInstance) {
         db.prepare("DELETE FROM item_preferences WHERE item_id = ? AND reaction IS NULL AND coined = 0").run(request.params.id);
       })();
     } else {
+      const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(request.params.id) as
+        | { id: string; creator_id: string | null; category_id: string | null }
+        | undefined;
+      if (!item) return reply.code(404).send({ error: "Item not found" });
       db.prepare(`
         INSERT INTO item_preferences (item_id, reaction, updated_at) VALUES (?, ?, ?)
         ON CONFLICT(item_id) DO UPDATE SET reaction = excluded.reaction, updated_at = excluded.updated_at
       `).run(request.params.id, body.reaction, timestamp);
-      recordRecommendationSignals(request.params.id, body.reaction, 1, timestamp);
+      recordRecommendationSignals(item, body.reaction, 1, timestamp);
     }
     return { reaction: body.reaction ?? null };
   });
 
-  app.put<{ Params: { id: string }; Body: Record<string, never> | undefined }>("/items/:id/coin", async (request) => {
+  app.patch<{ Params: { id: string }; Body: Record<string, never> | undefined }>("/items/:id/coin", async (request, reply) => {
     const itemId = request.params.id;
     const timestamp = nowIso();
+    const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(itemId) as
+      | { id: string; creator_id: string | null; category_id: string | null }
+      | undefined;
+    if (!item) return reply.code(404).send({ error: "Item not found" });
     // 单语句 toggle：用 CASE 翻转当前值，消除 SELECT-then-UPDATE 竞态
     db.prepare(`
       INSERT INTO item_preferences (item_id, coined, coined_at, updated_at)
@@ -178,7 +186,7 @@ export async function itemRoutes(app: FastifyInstance) {
     `).run(itemId, timestamp, timestamp, timestamp, timestamp);
     const current = db.prepare("SELECT coined FROM item_preferences WHERE item_id = ?").get(itemId) as { coined: number } | undefined;
     const coined = Boolean(current?.coined);
-    if (coined) recordRecommendationSignals(itemId, "coin", 1, timestamp);
+    if (coined) recordRecommendationSignals(item, "coin", 1, timestamp);
     return { coined };
   });
 
@@ -272,7 +280,9 @@ export async function itemRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string }; Body: FavoriteItemBody }>("/items/:id/favorites", async (request, reply) => {
     const body = request.body ?? ({} as typeof request.body);
     const itemId = request.params.id;
-    const item = db.prepare("SELECT id FROM media_items WHERE id = ?").get(itemId);
+    const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(itemId) as
+      | { id: string; creator_id: string | null; category_id: string | null }
+      | undefined;
     if (!item) {
       return reply.code(404).send({ error: "Item not found" });
     }
@@ -297,7 +307,7 @@ export async function itemRoutes(app: FastifyInstance) {
         ON CONFLICT(folder_id, item_id) DO NOTHING
       `).run(favoriteId, resolvedFolderId, itemId, createdAt);
       if (result.changes > 0) {
-        recordRecommendationSignals(itemId, "favorite", 1, createdAt);
+        recordRecommendationSignals(item, "favorite", 1, createdAt);
       }
       return resolvedFolderId;
     })();

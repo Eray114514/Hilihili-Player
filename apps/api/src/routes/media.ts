@@ -95,8 +95,8 @@ export async function mediaRoutes(app: FastifyInstance) {
   });
 
   app.get<{ Params: { id: string }; Headers: { range?: string } }>("/media/parts/:id/stream", async (request, reply) => {
-    const row = db.prepare("SELECT path, size_bytes, stream_path, stream_size_bytes FROM media_parts WHERE id = ?").get(request.params.id) as
-      | { path: string; size_bytes: number; stream_path: string | null; stream_size_bytes: number | null }
+    const row = db.prepare("SELECT path, stream_path FROM media_parts WHERE id = ?").get(request.params.id) as
+      | { path: string; stream_path: string | null }
       | undefined;
     if (!row || !existsSync(row.path)) {
       return reply.code(404).send({ error: "Media part not found" });

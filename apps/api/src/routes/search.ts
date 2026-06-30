@@ -44,9 +44,9 @@ export async function searchRoutes(app: FastifyInstance) {
           )
         )`;
     const params = Array.from({ length: 8 }, () => pattern);
-    const total = (db.prepare(`SELECT COUNT(*) AS count ${matchSql}`).get(...params) as { count: number }).count;
     const rows = db.prepare(`
-      SELECT mi.id ${matchSql}
+      SELECT mi.id, COUNT(*) OVER() AS total
+      ${matchSql}
       ORDER BY
         CASE
           WHEN mi.title = ? COLLATE NOCASE THEN 0
@@ -56,7 +56,8 @@ export async function searchRoutes(app: FastifyInstance) {
         END,
         COALESCE(mi.content_published_at, mi.file_modified_at, mi.first_seen_at) DESC
       LIMIT ? OFFSET ?
-    `).all(...params, query, `${query}%`, pattern, pattern, limit, offset) as { id: string }[];
+    `).all(...params, query, `${query}%`, pattern, pattern, limit, offset) as { id: string; total: number }[];
+    const total = rows.length > 0 ? rows[0].total : 0;
     const items = getFeedItemsByIds(rows.map((row) => row.id));
     if (total > 0 && query) {
       try {

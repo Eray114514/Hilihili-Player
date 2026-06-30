@@ -122,7 +122,7 @@ export async function meRoutes(app: FastifyInstance) {
     return { messages, total, unreadCount, hasMore: offset + rows.length < total };
   });
 
-  app.put("/me/messages/read", async () => {
+  app.post("/me/messages:read", async () => {
     const timestamp = nowIso();
     db.prepare("UPDATE creator_messages SET read_at = ? WHERE read_at IS NULL").run(timestamp);
     return { readAt: timestamp };

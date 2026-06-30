@@ -2,33 +2,37 @@ import { createId, nowIso } from "@hilihili/db";
 import type { InteractionKind } from "@hilihili/shared";
 import { db } from "./db.js";
 
-export function recordRecommendationSignals(itemId: string, kind: InteractionKind, value: number, timestamp = nowIso()) {
-  const item = db.prepare("SELECT id, creator_id, category_id FROM media_items WHERE id = ?").get(itemId) as
-    | { id: string; creator_id: string | null; category_id: string | null }
-    | undefined;
-  if (!item) return;
+export type ItemRef = { id: string; creator_id: string | null; category_id: string | null };
 
-  insertInteraction("item", itemId, kind, value, timestamp);
-  if (item.creator_id && (kind === "like" || kind === "dislike" || kind === "coin" || kind === "favorite")) {
-    insertInteraction("creator", item.creator_id, kind, value, timestamp);
-  }
-  if (item.category_id && (kind === "like" || kind === "dislike" || kind === "coin" || kind === "favorite")) {
-    insertInteraction("category", item.category_id, kind, value, timestamp);
-  }
+const insertInteractionStmt = db.prepare(
+  "INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+);
 
-  const tags = db.prepare(`
-    SELECT tag_id AS tagId, source, sort_order AS sortOrder
-    FROM media_tags WHERE media_item_id = ?
-    ORDER BY CASE source WHEN 'content' THEN 0 WHEN 'creator' THEN 1 WHEN 'category' THEN 2 ELSE 3 END, sort_order ASC
-  `).all(itemId) as { tagId: string; source: "legacy" | "category" | "creator" | "content"; sortOrder: number }[];
-  for (const tag of tags) {
-    insertInteraction("tag", tag.tagId, kind, value * tagSignalMultiplier(tag.source, tag.sortOrder), timestamp);
-  }
+const tagStmt = db.prepare(`
+  SELECT tag_id AS tagId, source, sort_order AS sortOrder
+  FROM media_tags WHERE media_item_id = ?
+  ORDER BY CASE source WHEN 'content' THEN 0 WHEN 'creator' THEN 1 WHEN 'category' THEN 2 ELSE 3 END, sort_order ASC
+`);
+
+export function recordRecommendationSignals(item: ItemRef, kind: InteractionKind, value: number, timestamp = nowIso()) {
+  const signalTargets = kind === "like" || kind === "dislike" || kind === "coin" || kind === "favorite";
+  db.transaction(() => {
+    insertInteractionStmt.run(createId("int"), "item", item.id, kind, value, timestamp);
+    if (signalTargets && item.creator_id) {
+      insertInteractionStmt.run(createId("int"), "creator", item.creator_id, kind, value, timestamp);
+    }
+    if (signalTargets && item.category_id) {
+      insertInteractionStmt.run(createId("int"), "category", item.category_id, kind, value, timestamp);
+    }
+    const tags = tagStmt.all(item.id) as { tagId: string; source: "legacy" | "category" | "creator" | "content"; sortOrder: number }[];
+    for (const tag of tags) {
+      insertInteractionStmt.run(createId("int"), "tag", tag.tagId, kind, value * tagSignalMultiplier(tag.source, tag.sortOrder), timestamp);
+    }
+  })();
 }
 
 export function insertInteraction(targetType: "item" | "creator" | "category" | "tag", targetId: string, kind: InteractionKind, value: number, timestamp: string) {
-  db.prepare("INSERT INTO interactions (id, target_type, target_id, kind, value, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(createId("int"), targetType, targetId, kind, value, timestamp);
+  insertInteractionStmt.run(createId("int"), targetType, targetId, kind, value, timestamp);
 }
 
 export function tagSignalMultiplier(source: "legacy" | "category" | "creator" | "content", sortOrder: number) {

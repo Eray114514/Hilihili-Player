@@ -9,7 +9,7 @@ import { AppShell } from "@/components/AppShell";
 import { CompactVideoCard } from "@/components/VideoCard";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { CreatorAvatar } from "@/components/CreatorAvatar";
-import { deleteJson, getJson, postJson, putJson, type FavoriteFolder, type ItemDetail } from "@/lib/api";
+import { deleteJson, getJson, patchJson, postJson, putJson, type FavoriteFolder, type ItemDetail } from "@/lib/api";
 import { fadeIn, pop, scaleIn, slideDown } from "@/lib/motion";
 import type { Reaction } from "@hilihili/shared";
 
@@ -75,7 +75,7 @@ export default function WatchPage() {
     const next = !coined;
     setCoined(next);
     try {
-      const response = await putJson<{ coined: boolean }>(`/items/${params.id}/coin`, {});
+      const response = await patchJson<{ coined: boolean }>(`/items/${params.id}/coin`, {});
       setCoined(response.coined);
     } catch (error) {
       setCoined(!next);
