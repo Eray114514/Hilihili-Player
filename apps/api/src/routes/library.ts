@@ -61,6 +61,8 @@ export async function libraryRoutes(app: ZodFastifyInstance) {
       startedAt: scanRuns.startedAt,
       finishedAt: scanRuns.finishedAt,
       itemsIndexed: scanRuns.itemsIndexed,
+      itemsFailed: scanRuns.itemsFailed,
+      itemsSkipped: scanRuns.itemsSkipped,
       thumbnailsTotal: scanRuns.thumbnailsTotal,
       thumbnailsReady: scanRuns.thumbnailsReady,
       thumbnailsFailed: scanRuns.thumbnailsFailed
@@ -80,6 +82,8 @@ export async function libraryRoutes(app: ZodFastifyInstance) {
       startedAt: scanRuns.startedAt,
       finishedAt: scanRuns.finishedAt,
       itemsIndexed: scanRuns.itemsIndexed,
+      itemsFailed: scanRuns.itemsFailed,
+      itemsSkipped: scanRuns.itemsSkipped,
       thumbnailsTotal: scanRuns.thumbnailsTotal,
       thumbnailsReady: scanRuns.thumbnailsReady,
       thumbnailsFailed: scanRuns.thumbnailsFailed

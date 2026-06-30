@@ -106,5 +106,16 @@ function RunProgress({ run }: { run: ScanRun }) {
   const thumbnailDone = run.thumbnailsReady + run.thumbnailsFailed;
   const progress = run.thumbnailsTotal > 0 ? Math.round((thumbnailDone / run.thumbnailsTotal) * 100) : run.status === "complete" ? 100 : 12;
   const label = run.status === "queued" ? "等待扫描" : run.status === "running" ? (run.thumbnailsTotal > 0 ? `生成缩略图 ${thumbnailDone}/${run.thumbnailsTotal}` : `正在索引 · 已发现 ${run.itemsIndexed}`) : run.status === "failed" ? `失败：${run.message ?? "未知错误"}` : `完成 · ${run.itemsIndexed} 个内容`;
-  return <div className="mt-3"><div className="mb-1.5 flex justify-between text-xs text-white/48"><span>{label}</span><span>{progress}%</span></div><div className="h-1.5 overflow-hidden rounded-full bg-white/8"><div className="h-full rounded-full bg-[var(--accent)] transition-all" style={{ width: `${progress}%` }} /></div></div>;
+  // 扫描自检：失败/跳过计数仅在 >0 时展示，便于发现"个别条目异常但整体完成"的情况。
+  const warnings: string[] = [];
+  if (run.itemsFailed > 0) warnings.push(`${run.itemsFailed} 失败`);
+  if (run.itemsSkipped > 0) warnings.push(`${run.itemsSkipped} 跳过`);
+  const warning = warnings.length > 0 ? warnings.join(" · ") : null;
+  return (
+    <div className="mt-3">
+      <div className="mb-1.5 flex justify-between text-xs text-white/48"><span>{label}</span><span>{progress}%</span></div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-white/8"><div className="h-full rounded-full bg-[var(--accent)] transition-all" style={{ width: `${progress}%` }} /></div>
+      {warning ? <div className={`mt-1.5 text-xs ${run.itemsFailed > 0 ? "text-red-400" : "text-white/40"}`}>{warning}</div> : null}
+    </div>
+  );
 }

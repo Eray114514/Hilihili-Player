@@ -51,8 +51,8 @@ test("scanner creates posts, galleries and stable playable items", async () => {
   const db = getSqlite();
   const libraryId = createId("lib");
   db.prepare("INSERT INTO libraries (id, name, root_path, enabled, created_at) VALUES (?, ?, ?, 1, ?)").run(libraryId, "测试库", root, nowIso());
-  assert.equal(await scanLibrary(libraryId), 4);
-  assert.equal(await scanLibrary(libraryId), 4);
+  assert.equal((await scanLibrary(libraryId)).indexed, 4);
+  assert.equal((await scanLibrary(libraryId)).indexed, 4);
 
   const rows = db.prepare("SELECT id, kind, title, post_body, hidden FROM media_items ORDER BY kind, title").all() as { id: string; kind: string; title: string; post_body: string | null; hidden: number }[];
   assert.equal(rows.length, 4, "repeat scans must not duplicate items");
@@ -70,7 +70,7 @@ test("scanner creates posts, galleries and stable playable items", async () => {
   const singlePart = db.prepare("SELECT id FROM media_parts WHERE item_id = ?").get(singleVideo?.id) as { id: string };
   db.prepare("INSERT INTO watch_progress (item_id, part_id, position_seconds, finished, updated_at) VALUES (?, ?, 12, 0, ?)")
     .run(singleVideo?.id, singlePart.id, nowIso());
-  assert.equal(await scanLibrary(libraryId), 4, "a restart scan should preserve the media part used by saved progress");
+  assert.equal((await scanLibrary(libraryId)).indexed, 4, "a restart scan should preserve the media part used by saved progress");
   const resumedPart = db.prepare("SELECT part_id AS partId FROM watch_progress WHERE item_id = ?").get(singleVideo?.id) as { partId: string };
   assert.equal(resumedPart.partId, singlePart.id);
 
@@ -79,11 +79,11 @@ test("scanner creates posts, galleries and stable playable items", async () => {
   const movedVideo = join(movedCreator, "已归类.mp4");
   mkdirSync(movedCreator, { recursive: true });
   renameSync(originalVideo, movedVideo);
-  assert.equal(await scanLibrary(libraryId), 4);
+  assert.equal((await scanLibrary(libraryId)).indexed, 4);
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_items").get() as { count: number }).count, 4, "moving a file must not leave a stale feed item");
 
   rmSync(movedVideo);
-  assert.equal(await scanLibrary(libraryId), 3);
+  assert.equal((await scanLibrary(libraryId)).indexed, 3);
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_items").get() as { count: number }).count, 3, "deleted files must be removed from the index");
 });
 
@@ -112,7 +112,7 @@ test("scanner prefers local layered tags and keeps the root index as a fallback"
   const db = getSqlite();
   const libraryId = createId("lib");
   db.prepare("INSERT INTO libraries (id, name, root_path, enabled, created_at) VALUES (?, ?, ?, 1, ?)").run(libraryId, "分层标签测试库", root, nowIso());
-  assert.equal(await scanLibrary(libraryId), 2);
+  assert.equal((await scanLibrary(libraryId)).indexed, 2);
 
   const localTags = db.prepare(`
     SELECT t.name, mt.source
@@ -176,7 +176,7 @@ test("scanner replaces legacy child parts when grouping a folder", async () => {
     VALUES (?, ?, ?, 1, ?, ?, ?)
   `).run(partId, itemId, "P1", videoPath, 12, "legacy-part-fingerprint");
 
-  assert.equal(await scanLibrary(libraryId), 1);
+  assert.equal((await scanLibrary(libraryId)).indexed, 1);
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_items WHERE library_id = ?").get(libraryId) as { count: number }).count, 1);
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_parts WHERE path = ?").get(videoPath) as { count: number }).count, 1);
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_subtitles WHERE path = ?").get(join(folder, "P1.zh.srt")) as { count: number }).count, 1);
@@ -197,7 +197,7 @@ test("scanner recognizes transport streams and removes empty legacy categories",
   db.prepare("INSERT INTO categories (id, name, library_id, created_at) VALUES (?, ?, ?, ?)").run(staleCategoryId, "_待归类", libraryId, now);
   db.prepare("INSERT INTO creators (id, name, category_id, created_at) VALUES (?, ?, ?, ?)").run(staleCreatorId, "未知UP", staleCategoryId, now);
 
-  assert.equal(await scanLibrary(libraryId), 1);
+  assert.equal((await scanLibrary(libraryId)).indexed, 1);
   assert.deepEqual(
     db.prepare("SELECT name FROM categories WHERE library_id = ? ORDER BY name").all(libraryId),
     [{ name: "待归类" }]
@@ -221,7 +221,7 @@ test("scanner aggregates creator profiles and emits one message for a followed U
   const db = getSqlite();
   const libraryId = createId("lib");
   db.prepare("INSERT INTO libraries (id, name, root_path, enabled, created_at) VALUES (?, ?, ?, 1, ?)").run(libraryId, "UP 资料测试库", root, nowIso());
-  assert.equal(await scanLibrary(libraryId), 2);
+  assert.equal((await scanLibrary(libraryId)).indexed, 2);
   const creator = db.prepare("SELECT id, alias, description, avatar_path AS avatarPath, banner_path AS bannerPath FROM creators WHERE library_id = ? AND name = ?").get(libraryId, "聚合UP") as { id: string; alias: string; description: string; avatarPath: string; bannerPath: string };
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM creators WHERE library_id = ? AND name = ?").get(libraryId, "聚合UP") as { count: number }).count, 1);
   assert.equal(creator.alias, "Aggregator");
@@ -233,8 +233,8 @@ test("scanner aggregates creator profiles and emits one message for a followed U
   const followedAt = nowIso();
   db.prepare("INSERT INTO creator_preferences (creator_id, blacklisted, followed, followed_at, updated_at) VALUES (?, 0, 1, ?, ?)").run(creator.id, followedAt, followedAt);
   writeFileSync(join(techCreator, "聚合UP_新视频.mp4"), "video-three");
-  assert.equal(await scanLibrary(libraryId), 3);
+  assert.equal((await scanLibrary(libraryId)).indexed, 3);
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM creator_messages WHERE creator_id = ?").get(creator.id) as { count: number }).count, 1);
-  assert.equal(await scanLibrary(libraryId), 3);
+  assert.equal((await scanLibrary(libraryId)).indexed, 3);
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM creator_messages WHERE creator_id = ?").get(creator.id) as { count: number }).count, 1, "repeated scans must not duplicate messages");
 });

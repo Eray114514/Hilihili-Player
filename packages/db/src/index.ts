@@ -400,6 +400,12 @@ function migrationAddScanTracking(db: Database.Database) {
   ensureColumn(db, "media_parts", "last_compatibility_attempt_at", "TEXT");
 }
 
+function migrationScanRunFailureCounts(db: Database.Database) {
+  // 扫描自检：记录失败/跳过的条目数，settings 页展示给用户排查问题
+  ensureColumn(db, "scan_runs", "items_failed", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "scan_runs", "items_skipped", "INTEGER NOT NULL DEFAULT 0");
+}
+
 const migrations: Migration[] = [
   { version: 0, name: "baseline", fn: migrationBaseline },
   { version: 1, name: "watch_progress_repair", fn: migrationWatchProgressRepair },
@@ -407,6 +413,7 @@ const migrations: Migration[] = [
   { version: 3, name: "merge_legacy_creators", fn: migrationMergeLegacyCreators },
   { version: 4, name: "search_history_timestamp", fn: migrationSearchHistoryTimestamp },
   { version: 5, name: "add_scan_tracking", fn: migrationAddScanTracking },
+  { version: 6, name: "scan_run_failure_counts", fn: migrationScanRunFailureCounts },
 ];
 
 function ensureSchemaMigrationsTable(db: Database.Database) {

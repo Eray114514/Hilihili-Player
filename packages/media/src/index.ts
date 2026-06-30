@@ -51,6 +51,14 @@ type ScanContext = {
   // category/creator/content 三层重复读同一文件。cache key 是 info 文件绝对路径。
   infoCache: Map<string, InfoJson>;
 };
+
+// 扫描自检统计：indexed=成功索引条目数；failed=索引失败（异常）条目数；
+// skipped=被 shouldSkipDir 跳过的目录数（_-prefixed，非 _待归类/_无UP主）
+type ScanStats = { indexed: number; failed: number; skipped: number };
+const ZERO_STATS: ScanStats = { indexed: 0, failed: 0, skipped: 0 };
+function addStats(a: ScanStats, b: ScanStats): ScanStats {
+  return { indexed: a.indexed + b.indexed, failed: a.failed + b.failed, skipped: a.skipped + b.skipped };
+}
 export type ItemTag = { id: string; name: string; source: TagSource; sortOrder: number };
 type InfoJson = {
   title?: string;
@@ -262,16 +270,17 @@ export async function processNextScanRun() {
       throw new Error(`Library not found: ${run.library_id}`);
     }
 
-    let indexed = 0;
+    let stats: ScanStats = { indexed: 0, failed: 0, skipped: 0 };
     for (const library of libraries) {
-      indexed += scanLibraryContents(db, library);
-      db.prepare("UPDATE scan_runs SET items_indexed = ? WHERE id = ?").run(indexed, run.id);
+      stats = addStats(stats, scanLibraryContents(db, library));
+      db.prepare("UPDATE scan_runs SET items_indexed = ?, items_failed = ?, items_skipped = ? WHERE id = ?")
+        .run(stats.indexed, stats.failed, stats.skipped, run.id);
     }
 
     await generateMissingThumbnails(db, run.id, libraries.map((item) => item.id));
     pruneOrphanTags(db);
-    db.prepare("UPDATE scan_runs SET status = 'complete', finished_at = ?, items_indexed = ? WHERE id = ?")
-      .run(nowIso(), indexed, run.id);
+    db.prepare("UPDATE scan_runs SET status = 'complete', finished_at = ?, items_indexed = ?, items_failed = ?, items_skipped = ? WHERE id = ?")
+      .run(nowIso(), stats.indexed, stats.failed, stats.skipped, run.id);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // 扫描失败不仅要写进 scan_runs.message，也要打到 stderr，否则 worker 日志
@@ -286,10 +295,10 @@ export async function processNextScanRun() {
 export async function scanEnabledLibraries() {
   const db = getSqlite();
   const libraries = db.prepare("SELECT * FROM libraries WHERE enabled = 1").all() as LibraryRow[];
-  let total = 0;
+  let total: ScanStats = { ...ZERO_STATS };
 
   for (const library of libraries) {
-    total += scanLibraryContents(db, library);
+    total = addStats(total, scanLibraryContents(db, library));
   }
 
   pruneOrphanTags(db);
@@ -308,13 +317,13 @@ export async function scanLibrary(libraryId: string) {
   return result;
 }
 
-function scanLibraryContents(db: SqliteDatabase, library: LibraryRow) {
+function scanLibraryContents(db: SqliteDatabase, library: LibraryRow): ScanStats {
   const tagsIndex = readTagsIndex(library.root_path);
   const context: ScanContext = { seenItemIds: new Set(), fingerprintCache: new Map(), infoCache: new Map() };
-  const indexed = scanRoot(db, library, tagsIndex, context);
+  const stats = scanRoot(db, library, tagsIndex, context);
   pruneUnseenItems(db, library.id, context.seenItemIds);
   pruneEmptyCategories(db, library.id);
-  return indexed;
+  return stats;
 }
 
 // `_` 前缀目录统一跳过；例外白名单集中在此，避免 scanRoot/scanCategory/scanCreator/
@@ -325,12 +334,12 @@ function shouldSkipDir(entry: string): boolean {
   return entry.startsWith(SKIPPED_DIR_PREFIX) && !ALLOWED_UNDERSCORE_DIRS.has(entry);
 }
 
-function scanRoot(db: SqliteDatabase, library: LibraryRow, tagsIndex: TagsIndex, context: ScanContext) {
+function scanRoot(db: SqliteDatabase, library: LibraryRow, tagsIndex: TagsIndex, context: ScanContext): ScanStats {
   if (!existsSync(library.root_path)) {
     throw new Error(`Library path does not exist: ${library.root_path}`);
   }
 
-  let indexed = 0;
+  let stats: ScanStats = { ...ZERO_STATS };
   const entries = safeReadDir(library.root_path);
 
   for (const entry of entries) {
@@ -340,18 +349,19 @@ function scanRoot(db: SqliteDatabase, library: LibraryRow, tagsIndex: TagsIndex,
     }
 
     if (shouldSkipDir(entry)) {
+      stats.skipped += 1;
       continue;
     }
 
-    indexed += scanCategory(db, library, entry, fullPath, tagsIndex, context);
+    stats = addStats(stats, scanCategory(db, library, entry, fullPath, tagsIndex, context));
   }
 
-  indexed += scanRootLevelFiles(db, library, tagsIndex, context);
-  return indexed;
+  stats = addStats(stats, scanRootLevelFiles(db, library, tagsIndex, context));
+  return stats;
 }
 
-function scanRootLevelFiles(db: SqliteDatabase, library: LibraryRow, tagsIndex: TagsIndex, context: ScanContext) {
-  let indexed = 0;
+function scanRootLevelFiles(db: SqliteDatabase, library: LibraryRow, tagsIndex: TagsIndex, context: ScanContext): ScanStats {
+  const stats: ScanStats = { ...ZERO_STATS };
   const categoryId = getOrCreateCategory(db, library.id, "未归类");
   const creatorId = getOrCreateCreator(db, library.id, categoryId, "未知UP");
 
@@ -359,18 +369,23 @@ function scanRootLevelFiles(db: SqliteDatabase, library: LibraryRow, tagsIndex: 
     const fullPath = join(library.root_path, entry);
     const stat = safeStat(fullPath);
     if (stat?.isFile() && (isVideoPath(fullPath) || isImagePath(fullPath))) {
-      indexed += indexSingleFile(db, library, categoryId, creatorId, "未归类", "未知UP", fullPath, tagsIndex, "fallback", context);
+      try {
+        stats.indexed += indexSingleFile(db, library, categoryId, creatorId, "未归类", "未知UP", fullPath, tagsIndex, "fallback", context);
+      } catch (error) {
+        stats.failed += 1;
+        log.warn("index single file failed", { path: fullPath, error: error instanceof Error ? error.message : String(error) });
+      }
     }
   }
 
-  return indexed;
+  return stats;
 }
 
-function scanCategory(db: SqliteDatabase, library: LibraryRow, categoryName: string, categoryPath: string, tagsIndex: TagsIndex, context: ScanContext) {
+function scanCategory(db: SqliteDatabase, library: LibraryRow, categoryName: string, categoryPath: string, tagsIndex: TagsIndex, context: ScanContext): ScanStats {
   if (categoryName === "_待归类") {
     return scanFallbackFiles(db, library, "待归类", "未知UP", categoryPath, tagsIndex, context);
   }
-  let indexed = 0;
+  let stats: ScanStats = { ...ZERO_STATS };
   const categoryId = getOrCreateCategory(db, library.id, categoryName);
   const entries = safeReadDir(categoryPath);
 
@@ -383,19 +398,25 @@ function scanCategory(db: SqliteDatabase, library: LibraryRow, categoryName: str
 
     if (stat.isDirectory()) {
       if (shouldSkipDir(entry)) {
+        stats.skipped += 1;
         continue;
       }
-      indexed += scanCreator(db, library, categoryId, categoryName, entry, fullPath, tagsIndex, context);
+      stats = addStats(stats, scanCreator(db, library, categoryId, categoryName, entry, fullPath, tagsIndex, context));
       continue;
     }
 
     if (isVideoPath(fullPath) || isImagePath(fullPath)) {
       const creatorId = getOrCreateCreator(db, library.id, categoryId, "未知UP");
-      indexed += indexSingleFile(db, library, categoryId, creatorId, categoryName, "未知UP", fullPath, tagsIndex, "fallback", context);
+      try {
+        stats.indexed += indexSingleFile(db, library, categoryId, creatorId, categoryName, "未知UP", fullPath, tagsIndex, "fallback", context);
+      } catch (error) {
+        stats.failed += 1;
+        log.warn("index single file failed", { path: fullPath, error: error instanceof Error ? error.message : String(error) });
+      }
     }
   }
 
-  return indexed;
+  return stats;
 }
 
 function scanCreator(
@@ -407,8 +428,8 @@ function scanCreator(
   creatorPath: string,
   tagsIndex: TagsIndex,
   context: ScanContext
-) {
-  let indexed = 0;
+): ScanStats {
+  let stats: ScanStats = { ...ZERO_STATS };
   const displayCreator = creatorName === "_无UP主" ? "未知UP" : creatorName;
   const creatorInfo = readInfoFile(join(creatorPath, "info.json"), context.infoCache);
   const creatorId = getOrCreateCreator(db, library.id, categoryId, displayCreator, creatorInfo, creatorPath);
@@ -424,6 +445,7 @@ function scanCreator(
 
     if (stat.isDirectory()) {
       if (shouldSkipDir(entry)) {
+        stats.skipped += 1;
         continue;
       }
 
@@ -437,26 +459,37 @@ function scanCreator(
         .filter((path) => safeStat(path)?.isFile() && isContentImage(path))
         .sort(compareNaturalPaths);
 
-      if (existsSync(join(fullPath, "post.txt"))) {
-        indexed += indexPost(db, library, categoryId, creatorId, fullPath, videos, images, tagsIndex, context);
-      } else if (entry === "图片") {
-        indexed += indexGallery(db, library, categoryId, creatorId, displayCreator, fullPath, images, tagsIndex, context);
-      } else if (videos.length > 0) {
-        indexed += indexMultiPartVideo(db, library, categoryId, creatorId, fullPath, videos, tagsIndex, context);
-      } else if (images.length > 0) {
-        indexed += indexGallery(db, library, categoryId, creatorId, displayCreator, fullPath, images, tagsIndex, context);
-      } else {
-        indexed += scanFallbackFiles(db, library, categoryName, displayCreator, fullPath, tagsIndex, context);
+      // 单个条目索引失败不应阻塞整个扫描；捕获异常、计数、继续下一个。
+      try {
+        if (existsSync(join(fullPath, "post.txt"))) {
+          stats.indexed += indexPost(db, library, categoryId, creatorId, fullPath, videos, images, tagsIndex, context);
+        } else if (entry === "图片") {
+          stats.indexed += indexGallery(db, library, categoryId, creatorId, displayCreator, fullPath, images, tagsIndex, context);
+        } else if (videos.length > 0) {
+          stats.indexed += indexMultiPartVideo(db, library, categoryId, creatorId, fullPath, videos, tagsIndex, context);
+        } else if (images.length > 0) {
+          stats.indexed += indexGallery(db, library, categoryId, creatorId, displayCreator, fullPath, images, tagsIndex, context);
+        } else {
+          stats = addStats(stats, scanFallbackFiles(db, library, categoryName, displayCreator, fullPath, tagsIndex, context));
+        }
+      } catch (error) {
+        stats.failed += 1;
+        log.warn("index item failed", { path: fullPath, error: error instanceof Error ? error.message : String(error) });
       }
       continue;
     }
 
     if (isVideoPath(fullPath) || isImagePath(fullPath)) {
-      indexed += indexSingleFile(db, library, categoryId, creatorId, categoryName, displayCreator, fullPath, tagsIndex, "standard", context);
+      try {
+        stats.indexed += indexSingleFile(db, library, categoryId, creatorId, categoryName, displayCreator, fullPath, tagsIndex, "standard", context);
+      } catch (error) {
+        stats.failed += 1;
+        log.warn("index single file failed", { path: fullPath, error: error instanceof Error ? error.message : String(error) });
+      }
     }
   }
 
-  return indexed;
+  return stats;
 }
 
 function scanFallbackFiles(
@@ -469,15 +502,15 @@ function scanFallbackFiles(
   context: ScanContext,
   depth = 0,
   visited: Set<string> = new Set()
-) {
+): ScanStats {
   // symlink 环检测：用 realpath 去重，避免循环链接导致递归爆栈。
   // 深度上限 10：防止恶意/损坏目录结构无限递归。两层保护都在进入循环前判定。
   const realStart = safeRealpath(startPath);
-  if (!realStart || visited.has(realStart)) return 0;
+  if (!realStart || visited.has(realStart)) return { ...ZERO_STATS };
   visited.add(realStart);
-  if (depth >= 10) return 0;
+  if (depth >= 10) return { ...ZERO_STATS };
 
-  let indexed = 0;
+  let stats: ScanStats = { ...ZERO_STATS };
   const categoryId = getOrCreateCategory(db, library.id, categoryName);
   const creatorId = getOrCreateCreator(db, library.id, categoryId, creatorName);
 
@@ -490,37 +523,49 @@ function scanFallbackFiles(
 
     if (stat.isDirectory()) {
       if (shouldSkipDir(entry)) {
+        stats.skipped += 1;
         continue;
       }
       const childEntries = safeReadDir(fullPath);
       const videos = childEntries.map((name) => join(fullPath, name)).filter((path) => safeStat(path)?.isFile() && isVideoPath(path)).sort(comparePartNames);
       const images = childEntries.map((name) => join(fullPath, name)).filter((path) => safeStat(path)?.isFile() && isContentImage(path)).sort(compareNaturalPaths);
-      if (existsSync(join(fullPath, "post.txt"))) {
-        indexed += indexPost(db, library, categoryId, creatorId, fullPath, videos, images, tagsIndex, context);
-        continue;
+      // 单个条目索引失败不应阻塞整个扫描；捕获异常、计数、继续下一个。
+      try {
+        if (existsSync(join(fullPath, "post.txt"))) {
+          stats.indexed += indexPost(db, library, categoryId, creatorId, fullPath, videos, images, tagsIndex, context);
+          continue;
+        }
+        if (entry === "图片" && images.length > 0) {
+          stats.indexed += indexGallery(db, library, categoryId, creatorId, creatorName, fullPath, images, tagsIndex, context);
+          continue;
+        }
+        if (videos.length > 0) {
+          stats.indexed += indexMultiPartVideo(db, library, categoryId, creatorId, fullPath, videos, tagsIndex, context);
+          continue;
+        }
+        if (images.length > 0) {
+          stats.indexed += indexGallery(db, library, categoryId, creatorId, creatorName, fullPath, images, tagsIndex, context);
+          continue;
+        }
+        stats = addStats(stats, scanFallbackFiles(db, library, categoryName, creatorName, fullPath, tagsIndex, context, depth + 1, visited));
+      } catch (error) {
+        stats.failed += 1;
+        log.warn("index entry failed", { path: fullPath, error: error instanceof Error ? error.message : String(error) });
       }
-      if (entry === "图片" && images.length > 0) {
-        indexed += indexGallery(db, library, categoryId, creatorId, creatorName, fullPath, images, tagsIndex, context);
-        continue;
-      }
-      if (videos.length > 0) {
-        indexed += indexMultiPartVideo(db, library, categoryId, creatorId, fullPath, videos, tagsIndex, context);
-        continue;
-      }
-      if (images.length > 0) {
-        indexed += indexGallery(db, library, categoryId, creatorId, creatorName, fullPath, images, tagsIndex, context);
-        continue;
-      }
-      indexed += scanFallbackFiles(db, library, categoryName, creatorName, fullPath, tagsIndex, context, depth + 1, visited);
       continue;
     }
 
     if (isVideoPath(fullPath) || isImagePath(fullPath)) {
-      indexed += indexSingleFile(db, library, categoryId, creatorId, categoryName, creatorName, fullPath, tagsIndex, "fallback", context);
+      try {
+        stats.indexed += indexSingleFile(db, library, categoryId, creatorId, categoryName, creatorName, fullPath, tagsIndex, "fallback", context);
+      } catch (error) {
+        stats.failed += 1;
+        log.warn("index single file failed", { path: fullPath, error: error instanceof Error ? error.message : String(error) });
+      }
     }
   }
 
-  return indexed;
+  return stats;
 }
 
 function indexMultiPartVideo(

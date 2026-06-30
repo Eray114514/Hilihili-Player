@@ -194,6 +194,8 @@ export const scanRuns = sqliteTable("scan_runs", {
   startedAt: text("started_at").notNull(),
   finishedAt: text("finished_at"),
   itemsIndexed: integer("items_indexed").notNull().default(0),
+  itemsFailed: integer("items_failed").notNull().default(0),
+  itemsSkipped: integer("items_skipped").notNull().default(0),
   thumbnailsTotal: integer("thumbnails_total").notNull().default(0),
   thumbnailsReady: integer("thumbnails_ready").notNull().default(0),
   thumbnailsFailed: integer("thumbnails_failed").notNull().default(0)

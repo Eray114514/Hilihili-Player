@@ -83,6 +83,8 @@ export type ScanRun = {
   startedAt: string;
   finishedAt: string | null;
   itemsIndexed: number;
+  itemsFailed: number;
+  itemsSkipped: number;
   thumbnailsTotal: number;
   thumbnailsReady: number;
   thumbnailsFailed: number;
