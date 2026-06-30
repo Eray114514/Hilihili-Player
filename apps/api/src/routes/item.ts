@@ -1,4 +1,4 @@
-import { createId, nowIso, categories, comments, creatorPreferences, creators, favoriteFolders, favorites, interactions, itemPreferences, mediaImages, mediaItems, mediaParts, mediaSubtitles, watchProgress } from "@hilihili/db";
+import { createId, nowIso, categories, comments, creatorPreferences, creators, favoriteFolders, favorites, interactions, itemPreferences, mediaImages, mediaItems, mediaParts, mediaSubtitles, mediaTags, watchProgress } from "@hilihili/db";
 import { addManualTagToItem, listItemTags, removeTagFromItem } from "@hilihili/media";
 import { getRecommendedFeed } from "@hilihili/recommendation";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -200,6 +200,15 @@ export async function itemRoutes(app: ZodFastifyInstance) {
 
   app.delete<{ Params: { id: string; tagId: string } }>("/items/:id/tags/:tagId", async (request, reply) => {
     try {
+      // 先检查 (itemId, tagId) 是否真的关联，未关联（含 tag 不存在/不属于该 item）返 404。
+      // removeTagFromItem 走 metadata 文件重建流程，无法用 changes 判断，故用预检 SELECT。
+      const existing = db.select({ tagId: mediaTags.tagId })
+        .from(mediaTags)
+        .where(and(eq(mediaTags.mediaItemId, request.params.id), eq(mediaTags.tagId, request.params.tagId)))
+        .get();
+      if (!existing) {
+        return reply.code(404).send({ error: "Tag not found" });
+      }
       const tags = removeTagFromItem(request.params.id, request.params.tagId);
       return { tags };
     } catch (error) {
@@ -463,17 +472,23 @@ export async function itemRoutes(app: ZodFastifyInstance) {
     return reply.code(201).send({ folderId, favorited: true });
   });
 
-  app.delete<{ Params: { id: string }; Querystring: { folderId?: string } }>("/items/:id/favorites", async (request) => {
+  app.delete<{ Params: { id: string }; Querystring: { folderId?: string } }>("/items/:id/favorites", async (request, reply) => {
     if (request.query.folderId) {
-      db.delete(favorites).where(and(eq(favorites.itemId, request.params.id), eq(favorites.folderId, request.query.folderId))).run();
+      const result = db.delete(favorites).where(and(eq(favorites.itemId, request.params.id), eq(favorites.folderId, request.query.folderId))).run();
+      if (result.changes === 0) {
+        return reply.code(404).send({ error: "Favorite not found" });
+      }
     } else {
       db.delete(favorites).where(eq(favorites.itemId, request.params.id)).run();
     }
     return { ok: true };
   });
 
-  app.delete<{ Params: { id: string } }>("/items/:id/watch-progress", async (request) => {
-    db.delete(watchProgress).where(eq(watchProgress.itemId, request.params.id)).run();
+  app.delete<{ Params: { id: string } }>("/items/:id/watch-progress", async (request, reply) => {
+    const result = db.delete(watchProgress).where(eq(watchProgress.itemId, request.params.id)).run();
+    if (result.changes === 0) {
+      return reply.code(404).send({ error: "Watch progress not found" });
+    }
     return { ok: true };
   });
 }

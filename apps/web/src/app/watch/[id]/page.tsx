@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { AppShell } from "@/components/AppShell";
+import { ErrorFallback } from "@/components/ErrorFallback";
 import { CompactVideoCard } from "@/components/VideoCard";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { CreatorAvatar } from "@/components/CreatorAvatar";
@@ -30,6 +31,14 @@ export default function WatchPage() {
   const [tagDraft, setTagDraft] = useState("");
   const [tagBusy, setTagBusy] = useState<string | null>(null);
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [loadedItemId, setLoadedItemId] = useState(params.id);
+
+  // 切换视频时重置失败状态（在 render 中重置以避免 effect 内同步 setState 触发级联渲染）
+  if (loadedItemId !== params.id) {
+    setLoadedItemId(params.id);
+    setFailed(false);
+  }
 
   useEffect(() => {
     let ignore = false;
@@ -44,7 +53,7 @@ export default function WatchPage() {
       const resumeIndex = response.parts.findIndex((part) => part.id === response.item.resumePartId);
       setActivePartIndex(resumeIndex >= 0 ? resumeIndex : 0);
       if (response.parts.length > 1) setSideTab("parts");
-    });
+    }).catch(() => { if (!ignore) setFailed(true); });
     void getJson<{ folders: FavoriteFolder[] }>("/me/favorites").then((res) => {
       if (!ignore) setFolders(res.folders);
     });
@@ -90,7 +99,7 @@ export default function WatchPage() {
       if (isFavorited) {
         setFavoritedFolderIds((current) => current.filter((id) => id !== folderId));
         setFolders((current) => current.map((folder) => folder.id === folderId ? { ...folder, itemCount: Math.max(0, folder.itemCount - 1) } : folder));
-        await deleteJson(`/items/${params.id}/favorites?folderId=${folderId}`);
+        await deleteJson(`/items/${params.id}/favorites?folderId=${folderId}`, { ignoreNotFound: true });
       } else {
         setFavoritedFolderIds((current) => current.includes(folderId) ? current : [...current, folderId]);
         setFolders((current) => current.map((folder) => folder.id === folderId ? { ...folder, itemCount: folder.itemCount + 1 } : folder));
@@ -149,8 +158,17 @@ export default function WatchPage() {
   async function removeTag(tagId: string) {
     setTagBusy(tagId);
     try {
-      const response = await deleteJson<{ tags: ItemDetail["tagDetails"] }>(`/items/${params.id}/tags/${tagId}`);
-      applyTags(response.tags);
+      const response = await deleteJson<{ tags: ItemDetail["tagDetails"] }>(`/items/${params.id}/tags/${tagId}`, { ignoreNotFound: true });
+      if (response) {
+        applyTags(response.tags);
+      } else {
+        // 404：标签已被服务端删除，本地同步移除
+        setDetail((current) => {
+          if (!current) return current;
+          const remaining = current.tagDetails.filter((tag) => tag.id !== tagId);
+          return { ...current, tagDetails: remaining, tags: remaining.map((tag) => tag.name) };
+        });
+      }
     } catch (error) {
       console.error("[watch] 删除标签失败", error);
     } finally {
@@ -172,7 +190,7 @@ export default function WatchPage() {
 
   return (
     <AppShell wide>
-      {!detail ? <WatchSkeleton /> : (
+      {!detail ? (failed ? <WatchFailed /> : <WatchSkeleton />) : (
         <motion.div variants={fadeIn} initial="hidden" animate="visible" className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
           <main className="min-w-0">
             <VideoPlayer
@@ -280,6 +298,16 @@ export default function WatchPage() {
 
 function WatchSkeleton() {
   return <div className="grid skeleton-shimmer gap-6 lg:grid-cols-[minmax(0,1fr)_360px]"><div><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-5 h-7 w-2/3 rounded bg-white/5" /></div><div className="h-[60vh] rounded-xl bg-white/5" /></div>;
+}
+
+function WatchFailed() {
+  return (
+    <ErrorFallback
+      reset={() => window.location.reload()}
+      title="加载失败"
+      body="无法加载这个内容，可能已被移除或 API 不可用"
+    />
+  );
 }
 
 function formatDate(value: string | null) {

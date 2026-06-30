@@ -73,9 +73,18 @@ export async function patchJson<T>(path: string, body: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function deleteJson<T>(path: string): Promise<T> {
+export type DeleteJsonOptions = { ignoreNotFound?: boolean };
+
+// 传 `ignoreNotFound: true` 时，404 返回 null 而非抛错（用于乐观删除场景）；
+// 其他情况行为不变，仍抛错并保留 Promise<T> 返回类型。
+export function deleteJson<T>(path: string, options: { ignoreNotFound: true }): Promise<T | null>;
+export function deleteJson<T>(path: string, options?: DeleteJsonOptions): Promise<T>;
+export async function deleteJson<T>(path: string, options?: DeleteJsonOptions): Promise<T | null> {
   const response = await fetch(apiUrl(path), { method: "DELETE" });
   if (!response.ok) {
+    if (response.status === 404 && options?.ignoreNotFound) {
+      return null;
+    }
     throw new Error(await response.text());
   }
   return response.json() as Promise<T>;

@@ -59,7 +59,12 @@ export default function FavoritesPage() {
 
   async function deleteFolder(folder: FavoriteFolder) {
     if (!window.confirm(`确定删除收藏夹「${folder.name}」？夹内 ${folder.itemCount} 个收藏也会被移除。`)) return;
-    await deleteJson(`/me/favorites/folders/${folder.id}`);
+    try {
+      await deleteJson(`/me/favorites/folders/${folder.id}`);
+    } catch (error) {
+      // 404 表示收藏夹已不存在，UI 同步移除即可
+      console.error("[favorites] 删除收藏夹失败", error);
+    }
     setFolders((current) => current.filter((folderItem) => folderItem.id !== folder.id));
     if (activeFolder?.id === folder.id) setActiveFolder(null);
   }
@@ -68,7 +73,12 @@ export default function FavoritesPage() {
     if (!activeFolder) return;
     setBusyId(itemId);
     try {
-      await deleteJson(`/items/${itemId}/favorites?folderId=${activeFolder.id}`);
+      try {
+        await deleteJson(`/items/${itemId}/favorites?folderId=${activeFolder.id}`);
+      } catch (error) {
+        // 404 表示收藏已不存在，UI 同步移除即可
+        console.error("[favorites] 移除收藏失败", error);
+      }
       setItems((current) => current.filter((entry) => entry.item.id !== itemId));
       setFolders((current) =>
         current.map((folder) =>

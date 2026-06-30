@@ -50,7 +50,12 @@ function HistoryPageInner() {
   async function removeProgress(entry: ActivityEntry) {
     setBusyId(entry.item.id);
     try {
-      await deleteJson(`/items/${entry.item.id}/watch-progress`);
+      try {
+        await deleteJson(`/items/${entry.item.id}/watch-progress`);
+      } catch (error) {
+        // 404 表示记录已不存在，刷新列表即可同步
+        console.error("[history] 移除观看进度失败", error);
+      }
       await load();
     } finally {
       setBusyId(null);

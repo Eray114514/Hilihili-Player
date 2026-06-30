@@ -1,4 +1,4 @@
-import { clearSearchHistory, createId, creatorMessages, deleteSearchHistory, favoriteFolders, favorites, itemPreferences, listSearchHistory, mediaItems, mediaParts, nowIso, watchProgress } from "@hilihili/db";
+import { clearSearchHistory, createId, creatorMessages, favoriteFolders, favorites, itemPreferences, listSearchHistory, mediaItems, mediaParts, nowIso, searchHistory, watchProgress } from "@hilihili/db";
 import { getFeedItemsByIds } from "@hilihili/recommendation";
 import type { FeedItem } from "@hilihili/shared";
 import { alias } from "drizzle-orm/sqlite-core";
@@ -190,8 +190,11 @@ export async function meRoutes(app: ZodFastifyInstance) {
     return { ok: true };
   });
 
-  app.delete<{ Params: { id: string } }>("/me/search-history/:id", async (request) => {
-    deleteSearchHistory(request.params.id);
+  app.delete<{ Params: { id: string } }>("/me/search-history/:id", async (request, reply) => {
+    const result = db.delete(searchHistory).where(eq(searchHistory.id, request.params.id)).run();
+    if (result.changes === 0) {
+      return reply.code(404).send({ error: "Search history entry not found" });
+    }
     return { ok: true };
   });
 
@@ -221,8 +224,11 @@ export async function meRoutes(app: ZodFastifyInstance) {
     return reply.code(201).send({ id, name, createdAt });
   });
 
-  app.delete<{ Params: { id: string } }>("/me/favorites/folders/:id", async (request) => {
-    db.delete(favoriteFolders).where(eq(favoriteFolders.id, request.params.id)).run();
+  app.delete<{ Params: { id: string } }>("/me/favorites/folders/:id", async (request, reply) => {
+    const result = db.delete(favoriteFolders).where(eq(favoriteFolders.id, request.params.id)).run();
+    if (result.changes === 0) {
+      return reply.code(404).send({ error: "Favorite folder not found" });
+    }
     return { ok: true };
   });
 
