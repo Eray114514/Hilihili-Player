@@ -1,29 +1,111 @@
 import { getSqlite } from "@hilihili/db";
-import type { FeedItem, MediaKind } from "@hilihili/shared";
+import type { FeedItem, InteractionKind, MediaKind } from "@hilihili/shared";
 
+// ===== 信号权重 =====
+// item 自身信号最强，creator 次之（用户对作者的偏好弱于对作品的偏好），
+// category 更弱（分类是粗粒度），tag 最弱但能捕捉细粒度兴趣
+const WEIGHT_ITEM = 1;
+const WEIGHT_CREATOR = 0.8;
+const WEIGHT_CATEGORY = 0.45;
+const WEIGHT_TAG = 0.35;
+
+// exploration 是探索性随机扰动，用于打破完全确定性排序。
+// 调到 0.5 与单项 watch（KIND_WATCH * 1 = 0.15）同量级，避免随机性压过真实信号
+const EXPLORATION_WEIGHT = 0.5;
+
+// 图片 item 在视频为主的 feed 中略有劣势（用户更倾向视频消费）
+const IMAGE_PENALTY = -0.25;
+
+// ===== 单次交互权重系数 =====
+// coin > favorite > like > finish > watch，dislike 强负向
+const KIND_COIN = 4;
+const KIND_FAVORITE = 2.4;
+const KIND_LIKE = 2;
+const KIND_FINISH = 1.5;
+const KIND_WATCH = 0.15;
+const KIND_DISLIKE = 3;
+
+// 时间衰减半衰期 45 天：近期交互权重更高，2 个月前的交互衰减到 ~40%
+const DECAY_HALF_LIFE_DAYS = 45;
+
+// ===== tag 排位权重 =====
+// content 标签（视频自带）最强，creator 标签次之，category 标签最弱
+const TAG_SOURCE_BOOST_CONTENT = 1.7;
+const TAG_SOURCE_BOOST_CREATOR = 1.2;
+const TAG_SOURCE_BOOST_CATEGORY = 0.8;
+const TAG_SOURCE_BOOST_LEGACY = 1;
+const TAG_POSITION_DECAY = 0.08; // 每后一个 tag 权重递减 8%
+const TAG_POSITION_FLOOR = 0.45; // 最低不低于 45%，避免长尾 tag 完全失效
+
+// ageBoost：新 item 加分，1 个月内线性衰减到 0
+const AGE_BOOST_WINDOW_DAYS = 30;
+
+// diversityRerank：同 creator 在结果中占比上限 15%（最少 1 个，避免小结果集过度限制）
+const DIVERSITY_CAP_RATIO = 0.15;
+
+const MS_PER_DAY = 86400000;
+
+// ===== 类型定义 =====
+
+// 裸 SQL 结果行：字段名保持 snake_case 与 SQL 别名对齐（非 schema camelCase），
+// 每个字段后的注释标明 JOIN 来源，方便 reader 追溯关系
 type CandidateRow = {
-  id: string;
-  kind: MediaKind;
-  title: string;
-  post_body: string | null;
-  description: string | null;
-  creator_id: string | null;
-  category_id: string | null;
-  first_seen_at: string;
-  content_published_at: string | null;
-  file_modified_at: string | null;
-  cover_path: string | null;
-  generated_cover_path: string | null;
-  thumbnail_status: "pending" | "ready" | "failed";
-  category_name: string | null;
-  creator_name: string | null;
-  creator_alias: string | null;
-  creator_avatar_path: string | null;
-  part_count: number;
-  preview_part_id: string | null;
-  finished: number | null;
-  creator_blacklisted: number;
+  id: string; // from media_items.id
+  kind: MediaKind; // from media_items.kind
+  title: string; // from media_items.title
+  post_body: string | null; // from media_items.post_body
+  description: string | null; // from media_items.description
+  creator_id: string | null; // from media_items.creator_id
+  category_id: string | null; // from media_items.category_id
+  first_seen_at: string; // from media_items.first_seen_at
+  content_published_at: string | null; // from media_items.content_published_at
+  file_modified_at: string | null; // from media_items.file_modified_at
+  cover_path: string | null; // from media_items.cover_path
+  generated_cover_path: string | null; // from media_items.generated_cover_path
+  thumbnail_status: "pending" | "ready" | "failed"; // from media_items.thumbnail_status
+  category_name: string | null; // from categories.name
+  creator_name: string | null; // from creators.name
+  creator_alias: string | null; // from creators.alias
+  creator_avatar_path: string | null; // from creators.avatar_path
+  part_count: number; // from COALESCE(pc.part_count, 0)
+  preview_part_id: string | null; // from (SELECT mp.id ... LIMIT 1)
+  finished: number | null; // from watch_progress.finished
+  creator_blacklisted: number; // from CASE WHEN EXISTS (blacklist) ...
 };
+
+type InteractionRow = {
+  kind: InteractionKind;
+  value: number;
+  created_at: string;
+};
+
+type InteractionRowWithTarget = { target_id: string } & InteractionRow;
+
+type TagInteractionRow = {
+  item_id: string;
+  kind: InteractionKind;
+  value: number;
+  created_at: string;
+  source: "legacy" | "category" | "creator" | "content";
+  sortOrder: number;
+};
+
+type PreviewImageRow = {
+  item_id: string;
+  id: string;
+  width: number | null;
+  height: number | null;
+  is_animated: number | null;
+};
+
+type PreloadedInteractions = {
+  item: Map<string, InteractionRow[]>;
+  creator: Map<string, InteractionRow[]>;
+  category: Map<string, InteractionRow[]>;
+  tag: Map<string, TagInteractionRow[]>;
+};
+
+type PreloadedImages = Map<string, { images: PreviewImageRow[]; count: number }>;
 
 export type FeedOptions = {
   limit?: number;
@@ -40,10 +122,57 @@ export type FeedOptions = {
   mode?: "recommended" | "latest" | "oldest" | "shuffle";
 };
 
+type ScoredCandidate = { row: CandidateRow; score: number };
+
 export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
   const limit = Math.min(Math.max(options.limit ?? 24, 1), 80);
   const offset = Math.min(Math.max(options.offset ?? 0, 0), 10000);
   const db = getSqlite();
+
+  const candidates = fetchCandidates(db, options);
+  if (candidates.length === 0) return [];
+
+  // 批量预加载所有候选的 interactions，避免 scoreCandidate 内部 N+1 查询
+  const preloaded = preloadInteractions(db, candidates);
+  const scored: ScoredCandidate[] = candidates.map((row) => ({
+    row,
+    score: scoreCandidate(row, preloaded, options.seed)
+  }));
+
+  const sorted = options.mode === "latest"
+    ? scored.sort((a, b) => dateFor(b.row).localeCompare(dateFor(a.row)))
+    : options.mode === "oldest"
+      ? scored.sort((a, b) => dateFor(a.row).localeCompare(dateFor(b.row)))
+      : options.mode === "shuffle"
+        ? precomputeShuffle(scored, options.seed)
+        : diversityRerank(scored.sort((a, b) => b.score - a.score));
+
+  // 只为当前页预加载图片，避免对未返回的候选做无谓查询
+  const page = sorted.slice(offset, offset + limit);
+  const imageInfo = preloadImages(db, page.map(({ row }) => row.id));
+  return page.map(({ row, score }) => toFeedItem(row, score, imageInfo));
+}
+
+export function getFeedItemsByIds(ids: string[]): FeedItem[] {
+  const uniqueIds = [...new Set(ids)].slice(0, 80);
+  if (uniqueIds.length === 0) return [];
+  const db = getSqlite();
+  // 调用方只关心按 id 顺序拿 item：跳过打分和排序，直接 fetch + 预加载图片
+  const candidates = fetchCandidates(db, {
+    itemIds: uniqueIds,
+    includeImages: true,
+    includeFinished: true,
+    includeBlacklisted: true
+  });
+  const imageInfo = preloadImages(db, candidates.map((row) => row.id));
+  const byId = new Map(candidates.map((row) => [row.id, toFeedItem(row, 0, imageInfo)]));
+  return uniqueIds.flatMap((id) => {
+    const item = byId.get(id);
+    return item ? [item] : [];
+  });
+}
+
+function fetchCandidates(db: ReturnType<typeof getSqlite>, options: FeedOptions): CandidateRow[] {
   const params: (string | number)[] = [];
   const filters = ["mi.hidden = 0"];
 
@@ -61,7 +190,7 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
   if (options.itemIds) {
     if (options.itemIds.length === 0) return [];
     const ids = options.itemIds.slice(0, 80);
-    filters.push(`mi.id IN (${ids.map(() => "?").join(", ")})`);
+    filters.push(`mi.id IN (${placeholders(ids)})`);
     params.push(...ids);
   }
   if (!options.includeFinished) {
@@ -76,6 +205,7 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
     params.push(options.creatorId);
   }
 
+  // 保留派生表 JOIN 而非关联子查询，避免每行重复 COUNT（物化一次派生表更高效）
   const rows = db.prepare(`
     SELECT
       mi.id, mi.kind, mi.title, mi.post_body, mi.description, mi.creator_id, mi.category_id, mi.first_seen_at,
@@ -103,104 +233,161 @@ export function getRecommendedFeed(options: FeedOptions = {}): FeedItem[] {
     WHERE ${filters.join(" AND ")}
   `).all(...params) as CandidateRow[];
 
-  const candidates = options.includeBlacklisted ? rows : rows.filter((row) => row.creator_blacklisted === 0);
-  const scored = candidates.map((row) => ({
-    row,
-    score: scoreCandidate(db, row, options.seed)
-  }));
-
-  const dateFor = (row: CandidateRow) => row.content_published_at ?? row.file_modified_at ?? row.first_seen_at;
-  const sorted = options.mode === "latest"
-    ? scored.sort((a, b) => dateFor(b.row).localeCompare(dateFor(a.row)))
-    : options.mode === "oldest"
-      ? scored.sort((a, b) => dateFor(a.row).localeCompare(dateFor(b.row)))
-      : options.mode === "shuffle"
-        ? scored.sort((a, b) => seededRandom(`${options.seed}:${a.row.id}`) - seededRandom(`${options.seed}:${b.row.id}`))
-        : diversityRerank(scored.sort((a, b) => b.score - a.score));
-
-  return sorted.slice(offset, offset + limit).map(({ row, score }) => toFeedItem(db, row, score));
+  return options.includeBlacklisted ? rows : rows.filter((row) => row.creator_blacklisted === 0);
 }
 
-export function getFeedItemsByIds(ids: string[]): FeedItem[] {
-  const uniqueIds = [...new Set(ids)].slice(0, 80);
-  if (uniqueIds.length === 0) return [];
-  const items = getRecommendedFeed({
-    itemIds: uniqueIds,
-    limit: uniqueIds.length,
-    includeImages: true,
-    includeFinished: true,
-    includeBlacklisted: true,
-    mode: "latest"
-  });
-  const byId = new Map(items.map((item) => [item.id, item]));
-  return uniqueIds.flatMap((id) => {
-    const item = byId.get(id);
-    return item ? [item] : [];
-  });
+function preloadInteractions(db: ReturnType<typeof getSqlite>, candidates: CandidateRow[]): PreloadedInteractions {
+  const empty: PreloadedInteractions = {
+    item: new Map(),
+    creator: new Map(),
+    category: new Map(),
+    tag: new Map()
+  };
+  if (candidates.length === 0) return empty;
+
+  const itemIds = candidates.map((c) => c.id);
+  const creatorIds = [...new Set(candidates.map((c) => c.creator_id).filter((id): id is string => id !== null))];
+  const categoryIds = [...new Set(candidates.map((c) => c.category_id).filter((id): id is string => id !== null))];
+
+  const item = groupInteractions(db.prepare(`
+    SELECT target_id, kind, value, created_at FROM interactions
+    WHERE target_type = 'item' AND target_id IN (${placeholders(itemIds)})
+  `).all(...itemIds) as InteractionRowWithTarget[]);
+
+  const creator = creatorIds.length > 0
+    ? groupInteractions(db.prepare(`
+        SELECT target_id, kind, value, created_at FROM interactions
+        WHERE target_type = 'creator' AND target_id IN (${placeholders(creatorIds)})
+      `).all(...creatorIds) as InteractionRowWithTarget[])
+    : new Map<string, InteractionRow[]>();
+
+  const category = categoryIds.length > 0
+    ? groupInteractions(db.prepare(`
+        SELECT target_id, kind, value, created_at FROM interactions
+        WHERE target_type = 'category' AND target_id IN (${placeholders(categoryIds)})
+      `).all(...categoryIds) as InteractionRowWithTarget[])
+    : new Map<string, InteractionRow[]>();
+
+  const tagRows = db.prepare(`
+    SELECT mt.media_item_id AS item_id, i.kind, i.value, i.created_at, mt.source, mt.sort_order AS sortOrder
+    FROM media_tags mt
+    JOIN interactions i ON i.target_type = 'tag' AND i.target_id = mt.tag_id
+    WHERE mt.media_item_id IN (${placeholders(itemIds)})
+  `).all(...itemIds) as TagInteractionRow[];
+  const tag = new Map<string, TagInteractionRow[]>();
+  for (const row of tagRows) {
+    const list = tag.get(row.item_id) ?? [];
+    list.push(row);
+    tag.set(row.item_id, list);
+  }
+
+  return { item, creator, category, tag };
 }
 
-function scoreCandidate(db: ReturnType<typeof getSqlite>, row: CandidateRow, seed = "home") {
-  const itemWeight = interactionWeight(db, "item", row.id);
-  const creatorWeight = row.creator_id ? interactionWeight(db, "creator", row.creator_id) : 0;
-  const categoryWeight = row.category_id ? interactionWeight(db, "category", row.category_id) : 0;
-  const tagWeight = tagInteractionWeight(db, row.id);
-  const ageBoost = Math.max(0, 1 - (Date.now() - Date.parse(row.first_seen_at)) / 1000 / 60 / 60 / 24 / 30);
-  const exploration = seededRandom(`${seed}:${row.id}`) * 2.5;
-  const imagePenalty = row.kind === "image" ? -0.25 : 0;
+function preloadImages(db: ReturnType<typeof getSqlite>, itemIds: string[]): PreloadedImages {
+  const map: PreloadedImages = new Map();
+  if (itemIds.length === 0) return map;
 
-  return 1 + itemWeight + creatorWeight * 0.8 + categoryWeight * 0.45 + tagWeight * 0.35 + ageBoost + exploration + imagePenalty;
+  const placeholderList = placeholders(itemIds);
+  // 窗口函数取每 item 前 9 张（按 sort_index 升序），避免逐 item LIMIT 查询
+  const imageRows = db.prepare(`
+    SELECT item_id, id, width, height, is_animated FROM (
+      SELECT item_id, id, width, height, is_animated,
+             ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY sort_index ASC) AS rn
+      FROM media_images WHERE item_id IN (${placeholderList})
+    ) WHERE rn <= 9
+    ORDER BY item_id, rn
+  `).all(...itemIds) as PreviewImageRow[];
+  for (const row of imageRows) {
+    const entry = map.get(row.item_id) ?? { images: [], count: 0 };
+    entry.images.push(row);
+    map.set(row.item_id, entry);
+  }
+
+  const countRows = db.prepare(`
+    SELECT item_id, COUNT(*) AS count FROM media_images
+    WHERE item_id IN (${placeholderList})
+    GROUP BY item_id
+  `).all(...itemIds) as { item_id: string; count: number }[];
+  for (const row of countRows) {
+    const entry = map.get(row.item_id) ?? { images: [], count: 0 };
+    entry.count = row.count;
+    map.set(row.item_id, entry);
+  }
+
+  return map;
 }
 
-function interactionWeight(db: ReturnType<typeof getSqlite>, targetType: string, targetId: string) {
-  const rows = db.prepare(`
-    SELECT kind, value, created_at FROM interactions
-    WHERE target_type = ? AND target_id = ?
-  `).all(targetType, targetId) as { kind: string; value: number; created_at: string }[];
+function scoreCandidate(row: CandidateRow, preloaded: PreloadedInteractions, seed = "home"): number {
+  const itemWeight = sumInteractions(preloaded.item.get(row.id) ?? []);
+  const creatorWeight = row.creator_id ? sumInteractions(preloaded.creator.get(row.creator_id) ?? []) : 0;
+  const categoryWeight = row.category_id ? sumInteractions(preloaded.category.get(row.category_id) ?? []) : 0;
+  const tagWeight = sumTagInteractions(preloaded.tag.get(row.id) ?? []);
+  const ageBoost = Math.max(0, 1 - (Date.now() - Date.parse(dateFor(row))) / MS_PER_DAY / AGE_BOOST_WINDOW_DAYS);
+  const exploration = seededRandom(`${seed}:${row.id}`) * EXPLORATION_WEIGHT;
+  const imagePenalty = row.kind === "image" ? IMAGE_PENALTY : 0;
 
+  return 1
+    + itemWeight * WEIGHT_ITEM
+    + creatorWeight * WEIGHT_CREATOR
+    + categoryWeight * WEIGHT_CATEGORY
+    + tagWeight * WEIGHT_TAG
+    + ageBoost
+    + exploration
+    + imagePenalty;
+}
+
+function sumInteractions(rows: InteractionRow[]): number {
   return rows.reduce((score, row) => score + kindWeight(row.kind, row.value, row.created_at), 0);
 }
 
-function tagInteractionWeight(db: ReturnType<typeof getSqlite>, itemId: string) {
-  const rows = db.prepare(`
-    SELECT i.kind, i.value, i.created_at, mt.source, mt.sort_order AS sortOrder
-    FROM media_tags mt
-    JOIN interactions i ON i.target_type = 'tag' AND i.target_id = mt.tag_id
-    WHERE mt.media_item_id = ?
-  `).all(itemId) as { kind: string; value: number; created_at: string; source: "legacy" | "category" | "creator" | "content"; sortOrder: number }[];
-
+function sumTagInteractions(rows: TagInteractionRow[]): number {
   return rows.reduce((score, row) => score + kindWeight(row.kind, row.value, row.created_at) * tagPlacementWeight(row.source, row.sortOrder), 0);
 }
 
-function kindWeight(kind: string, value: number, createdAt: string) {
+function kindWeight(kind: InteractionKind, value: number, createdAt: string): number {
   const parsed = Date.parse(createdAt);
-  const decay = Number.isFinite(parsed) ? Math.exp(-((Date.now() - parsed) / 86400000) / 45) : 1;
+  const decay = Number.isFinite(parsed) ? Math.exp(-((Date.now() - parsed) / MS_PER_DAY) / DECAY_HALF_LIFE_DAYS) : 1;
   switch (kind) {
     case "coin":
-      return value * 4 * decay;
+      return value * KIND_COIN * decay;
     case "favorite":
-      return value * 2.4 * decay;
+      return value * KIND_FAVORITE * decay;
     case "like":
-      return value * 2 * decay;
+      return value * KIND_LIKE * decay;
     case "finish":
-      return value * 1.5 * decay;
+      return value * KIND_FINISH * decay;
     case "watch":
-      return value * 0.15 * decay;
+      return value * KIND_WATCH * decay;
     case "dislike":
-      return -value * 3 * decay;
+      return -value * KIND_DISLIKE * decay;
+    case "blacklist_up":
+      // blacklist_up 已通过候选过滤排除，正向加权无意义，返 0 是运行时容错
+      return 0;
     default:
+      // exhaustiveness: InteractionKind 已全覆盖，新增 kind 时必须在此显式处理
       return 0;
   }
 }
 
-function tagPlacementWeight(source: "legacy" | "category" | "creator" | "content", sortOrder: number) {
-  const sourceBoost = source === "content" ? 1.7 : source === "creator" ? 1.2 : source === "category" ? 0.8 : 1;
-  const positionBoost = Math.max(0.45, 1 - Math.max(0, sortOrder) * 0.08);
+function tagPlacementWeight(source: "legacy" | "category" | "creator" | "content", sortOrder: number): number {
+  const sourceBoost = source === "content" ? TAG_SOURCE_BOOST_CONTENT
+    : source === "creator" ? TAG_SOURCE_BOOST_CREATOR
+    : source === "category" ? TAG_SOURCE_BOOST_CATEGORY
+    : TAG_SOURCE_BOOST_LEGACY;
+  const positionBoost = Math.max(TAG_POSITION_FLOOR, 1 - Math.max(0, sortOrder) * TAG_POSITION_DECAY);
   return sourceBoost * positionBoost;
 }
 
-function diversityRerank(scored: { row: CandidateRow; score: number }[]): { row: CandidateRow; score: number }[] {
-  const result: { row: CandidateRow; score: number }[] = [];
-  const deferred: { row: CandidateRow; score: number }[] = [];
+function dateFor(row: CandidateRow): string {
+  return row.content_published_at ?? row.file_modified_at ?? row.first_seen_at;
+}
+
+function diversityRerank(scored: ScoredCandidate[]): ScoredCandidate[] {
+  // 配额动态化：小结果集放宽（最少 1），大结果集按 15% 收紧
+  const cap = Math.max(1, Math.floor(scored.length * DIVERSITY_CAP_RATIO));
+  const result: ScoredCandidate[] = [];
+  const deferred: ScoredCandidate[] = [];
   const creatorCount = new Map<string, number>();
 
   const violates = (creatorId: string | null): boolean => {
@@ -209,13 +396,13 @@ function diversityRerank(scored: { row: CandidateRow; score: number }[]): { row:
     if (len >= 2 && result[len - 1].row.creator_id === creatorId && result[len - 2].row.creator_id === creatorId) {
       return true;
     }
-    if ((creatorCount.get(creatorId) ?? 0) >= 3) {
+    if ((creatorCount.get(creatorId) ?? 0) >= cap) {
       return true;
     }
     return false;
   };
 
-  const add = (item: { row: CandidateRow; score: number }) => {
+  const add = (item: ScoredCandidate) => {
     result.push(item);
     if (item.row.creator_id !== null) {
       creatorCount.set(item.row.creator_id, (creatorCount.get(item.row.creator_id) ?? 0) + 1);
@@ -224,7 +411,8 @@ function diversityRerank(scored: { row: CandidateRow; score: number }[]): { row:
 
   for (const item of scored) {
     if (violates(item.row.creator_id)) {
-      deferred.push({ row: item.row, score: item.score * 0.65 });
+      // 保留原 score：true relevance 没变，只是位置延后（不再人为 * 0.65 压低）
+      deferred.push(item);
     } else {
       add(item);
     }
@@ -232,7 +420,7 @@ function diversityRerank(scored: { row: CandidateRow; score: number }[]): { row:
 
   while (deferred.length > 0) {
     let added = false;
-    const remaining: { row: CandidateRow; score: number }[] = [];
+    const remaining: ScoredCandidate[] = [];
     for (const item of deferred) {
       if (violates(item.row.creator_id)) {
         remaining.push(item);
@@ -253,11 +441,16 @@ function diversityRerank(scored: { row: CandidateRow; score: number }[]): { row:
   return result;
 }
 
-function toFeedItem(db: ReturnType<typeof getSqlite>, row: CandidateRow, score: number): FeedItem {
-  const previewImages = db.prepare(`
-    SELECT id, width, height, is_animated FROM media_images WHERE item_id = ? ORDER BY sort_index ASC LIMIT 9
-  `).all(row.id) as { id: string; width: number | null; height: number | null; is_animated: number | null }[];
-  const imageCount = (db.prepare("SELECT COUNT(*) AS count FROM media_images WHERE item_id = ?").get(row.id) as { count: number }).count;
+function precomputeShuffle(scored: ScoredCandidate[], seed?: string): ScoredCandidate[] {
+  // 预计算每个 item 的随机值再排序，避免比较器内重复调用 seededRandom
+  const withRandom = scored.map((item) => ({ item, r: seededRandom(`${seed}:${item.row.id}`) }));
+  withRandom.sort((a, b) => a.r - b.r);
+  return withRandom.map(({ item }) => item);
+}
+
+function toFeedItem(row: CandidateRow, score: number, imageInfo: PreloadedImages): FeedItem {
+  const entry = imageInfo.get(row.id) ?? { images: [], count: 0 };
+  const previewImages = entry.images;
   return {
     id: row.id,
     kind: row.kind,
@@ -270,16 +463,19 @@ function toFeedItem(db: ReturnType<typeof getSqlite>, row: CandidateRow, score: 
     coverUrl: row.cover_path || row.generated_cover_path ? `/media/items/${row.id}/cover` : null,
     thumbnailStatus: row.thumbnail_status,
     firstSeenAt: row.first_seen_at,
-    displayDate: row.content_published_at ?? row.file_modified_at ?? row.first_seen_at,
+    displayDate: dateFor(row),
     postExcerpt: row.post_body ? excerpt(row.post_body) : row.description ? excerpt(row.description) : null,
     playable: row.part_count > 0,
     previewPartId: row.preview_part_id,
-    imageCount,
-    previewImages: previewImages.map((image) => ({
-      ...image,
-      isAnimated: Boolean(image.is_animated),
-      thumbnailUrl: `/media/images/${image.id}/thumbnail`,
-      originalUrl: `/media/images/${image.id}/original`
+    imageCount: entry.count,
+    previewImages: previewImages.map(({ id, width, height, is_animated }) => ({
+      id,
+      width,
+      height,
+      is_animated,
+      isAnimated: Boolean(is_animated),
+      thumbnailUrl: `/media/images/${id}/thumbnail`,
+      originalUrl: `/media/images/${id}/original`
     })),
     partCount: row.part_count,
     coverIsAnimated: row.kind === "image" && previewImages[0] ? Boolean(previewImages[0].is_animated) : false,
@@ -287,16 +483,30 @@ function toFeedItem(db: ReturnType<typeof getSqlite>, row: CandidateRow, score: 
   };
 }
 
-function excerpt(value: string) {
+function excerpt(value: string): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized.length > 220 ? `${normalized.slice(0, 220)}…` : normalized;
 }
 
-function seededRandom(input: string) {
+function seededRandom(input: string): number {
   let hash = 2166136261;
   for (let index = 0; index < input.length; index += 1) {
     hash ^= input.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
   return ((hash >>> 0) % 100000) / 100000;
+}
+
+function placeholders(ids: string[]): string {
+  return ids.map(() => "?").join(", ");
+}
+
+function groupInteractions(rows: InteractionRowWithTarget[]): Map<string, InteractionRow[]> {
+  const map = new Map<string, InteractionRow[]>();
+  for (const row of rows) {
+    const list = map.get(row.target_id) ?? [];
+    list.push({ kind: row.kind, value: row.value, created_at: row.created_at });
+    map.set(row.target_id, list);
+  }
+  return map;
 }
