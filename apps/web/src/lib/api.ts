@@ -189,7 +189,6 @@ export type FavoriteFolder = {
   name: string;
   itemCount: number;
   createdAt: string;
-  updatedAt: string;
 };
 
 export type FavoriteListResponse = {

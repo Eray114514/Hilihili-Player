@@ -114,7 +114,7 @@ export default function WatchPage() {
     const name = newFolderName.trim();
     if (!name) return;
     const response = await postJson<{ id: string; name: string; createdAt: string }>("/me/favorites/folders", { name });
-    setFolders((current) => [...current, { id: response.id, name: response.name, itemCount: 1, createdAt: response.createdAt, updatedAt: response.createdAt }]);
+    setFolders((current) => [...current, { id: response.id, name: response.name, itemCount: 1, createdAt: response.createdAt }]);
     setFavoritedFolderIds((current) => current.includes(response.id) ? current : [...current, response.id]);
     setNewFolderName("");
     try {

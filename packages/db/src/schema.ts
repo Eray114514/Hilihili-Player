@@ -79,7 +79,7 @@ export const mediaImages = sqliteTable(
   "media_images",
   {
     id: text("id").primaryKey(),
-    itemId: text("item_id").notNull().references(() => mediaItems.id),
+    itemId: text("item_id").notNull().references(() => mediaItems.id, { onDelete: "cascade" }),
     path: text("path").notNull(),
     sortIndex: integer("sort_index").notNull(),
     sizeBytes: integer("size_bytes").notNull(),
@@ -101,7 +101,7 @@ export const mediaParts = sqliteTable(
   "media_parts",
   {
     id: text("id").primaryKey(),
-    itemId: text("item_id").notNull().references(() => mediaItems.id),
+    itemId: text("item_id").notNull().references(() => mediaItems.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     partIndex: integer("part_index").notNull(),
     path: text("path").notNull(),
@@ -133,8 +133,8 @@ export const tags = sqliteTable("tags", {
 export const mediaTags = sqliteTable(
   "media_tags",
   {
-    mediaItemId: text("media_item_id").notNull().references(() => mediaItems.id),
-    tagId: text("tag_id").notNull().references(() => tags.id),
+    mediaItemId: text("media_item_id").notNull().references(() => mediaItems.id, { onDelete: "cascade" }),
+    tagId: text("tag_id").notNull().references(() => tags.id, { onDelete: "cascade" }),
     source: text("source", { enum: ["legacy", "category", "creator", "content"] }).notNull().default("legacy"),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: text("created_at")
@@ -160,7 +160,7 @@ export const interactions = sqliteTable(
 );
 
 export const watchProgress = sqliteTable("watch_progress", {
-  itemId: text("item_id").primaryKey().references(() => mediaItems.id),
+  itemId: text("item_id").primaryKey().references(() => mediaItems.id, { onDelete: "cascade" }),
   partId: text("part_id").references(() => mediaParts.id),
   positionSeconds: real("position_seconds").notNull().default(0),
   finished: integer("finished", { mode: "boolean" }).notNull().default(false),
@@ -173,7 +173,7 @@ export const comments = sqliteTable(
   "comments",
   {
     id: text("id").primaryKey(),
-    itemId: text("item_id").notNull().references(() => mediaItems.id),
+    itemId: text("item_id").notNull().references(() => mediaItems.id, { onDelete: "cascade" }),
     body: text("body").notNull(),
     atSeconds: real("at_seconds"),
     createdAt: text("created_at").notNull()
@@ -213,7 +213,7 @@ export const mediaSubtitles = sqliteTable(
 );
 
 export const itemPreferences = sqliteTable("item_preferences", {
-  itemId: text("item_id").primaryKey().references(() => mediaItems.id),
+  itemId: text("item_id").primaryKey().references(() => mediaItems.id, { onDelete: "cascade" }),
   reaction: text("reaction", { enum: ["like", "dislike"] }),
   coined: integer("coined", { mode: "boolean" }).notNull().default(false),
   coinedAt: text("coined_at"),
@@ -221,7 +221,7 @@ export const itemPreferences = sqliteTable("item_preferences", {
 });
 
 export const creatorPreferences = sqliteTable("creator_preferences", {
-  creatorId: text("creator_id").primaryKey().references(() => creators.id),
+  creatorId: text("creator_id").primaryKey().references(() => creators.id, { onDelete: "cascade" }),
   blacklisted: integer("blacklisted", { mode: "boolean" }).notNull().default(false),
   followed: integer("followed", { mode: "boolean" }).notNull().default(false),
   followedAt: text("followed_at"),
@@ -270,7 +270,7 @@ export const searchHistory = sqliteTable(
   {
     id: text("id").primaryKey(),
     query: text("query").notNull(),
-    searchedAt: integer("searched_at").notNull()
+    searchedAt: text("searched_at").notNull()
   },
   (table) => ({
     byQuery: uniqueIndex("search_history_query_idx").on(table.query)

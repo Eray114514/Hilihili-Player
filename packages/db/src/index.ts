@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { ulid } from "ulid";
 import type { SearchHistoryItem } from "@hilihili/shared";
 import * as schema from "./schema.js";
 
@@ -22,7 +23,8 @@ export function getSqlite() {
     sqlite = new Database(dbPath);
     sqlite.pragma("journal_mode = WAL");
     sqlite.pragma("foreign_keys = ON");
-    migrate(sqlite);
+    sqlite.pragma("busy_timeout = 5000");
+    applyMigrations(sqlite);
   }
 
   return sqlite;
@@ -37,10 +39,12 @@ export function nowIso() {
 }
 
 export function createId(prefix: string) {
-  return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+  return `${prefix}_${ulid()}`;
 }
 
-function migrate(db: Database.Database) {
+type Migration = { version: number; name: string; fn: (db: Database.Database) => void };
+
+function migrationBaseline(db: Database.Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS libraries (
       id TEXT PRIMARY KEY,
@@ -251,13 +255,13 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "media_tags", "source", "TEXT NOT NULL DEFAULT 'legacy'");
   ensureColumn(db, "media_tags", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "media_tags", "created_at", "TEXT");
-  db.prepare("UPDATE media_tags SET source = 'legacy' WHERE source IN ('scan', 'manual')").run();
   ensureColumn(db, "creator_preferences", "followed", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "creator_preferences", "followed_at", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS media_items_library_relative_idx ON media_items(library_id, relative_path)");
-  mergeLegacyCreators(db);
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS creators_library_name_idx ON creators(library_id, name)");
+}
 
+function migrationWatchProgressRepair(db: Database.Database) {
   db.exec(`
     UPDATE watch_progress SET started_at = updated_at WHERE started_at IS NULL;
     -- Older scanners rebuilt every media_parts row during each startup scan.
@@ -290,7 +294,9 @@ function migrate(db: Database.Database) {
     UPDATE watch_progress
     SET completed_at = CASE WHEN finished = 1 THEN COALESCE(completed_at, updated_at) ELSE NULL END;
   `);
+}
 
+function migrationCleanTitles(db: Database.Database) {
   db.exec(`
     UPDATE media_items SET title = trim(substr(title, length('[未知]') + 1))
     WHERE title LIKE '[未知]%' AND trim(substr(title, length('[未知]') + 1)) != '';
@@ -299,7 +305,7 @@ function migrate(db: Database.Database) {
   `);
 }
 
-function mergeLegacyCreators(db: Database.Database) {
+function migrationMergeLegacyCreators(db: Database.Database) {
   db.exec(`
     UPDATE creators
     SET library_id = (
@@ -360,6 +366,64 @@ function mergeLegacyCreators(db: Database.Database) {
   merge();
 }
 
+function migrationSearchHistoryTimestamp(db: Database.Database) {
+  // SQLite has no ALTER COLUMN; rebuild the table to switch searched_at from
+  // integer (unix ms) to text (ISO 8601). strftime produces the same shape as
+  // nowIso() (T separator, fractional seconds, Z suffix) so ORDER BY stays
+  // correct across migrated and freshly inserted rows.
+  db.exec(`
+    CREATE TABLE search_history_new (
+      id TEXT PRIMARY KEY,
+      query TEXT NOT NULL,
+      searched_at TEXT NOT NULL,
+      UNIQUE(query)
+    );
+    INSERT INTO search_history_new (id, query, searched_at)
+    SELECT id, query, strftime('%Y-%m-%dT%H:%M:%fZ', searched_at / 1000, 'unixepoch')
+    FROM search_history;
+    DROP TABLE search_history;
+    ALTER TABLE search_history_new RENAME TO search_history;
+    CREATE UNIQUE INDEX search_history_query_idx ON search_history(query);
+  `);
+}
+
+const migrations: Migration[] = [
+  { version: 0, name: "baseline", fn: migrationBaseline },
+  { version: 1, name: "watch_progress_repair", fn: migrationWatchProgressRepair },
+  { version: 2, name: "clean_titles", fn: migrationCleanTitles },
+  { version: 3, name: "merge_legacy_creators", fn: migrationMergeLegacyCreators },
+  { version: 4, name: "search_history_timestamp", fn: migrationSearchHistoryTimestamp },
+];
+
+function ensureSchemaMigrationsTable(db: Database.Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    );
+  `);
+}
+
+function getAppliedVersions(db: Database.Database): Set<number> {
+  const rows = db.prepare("SELECT version FROM schema_migrations").all() as { version: number }[];
+  return new Set(rows.map((r) => r.version));
+}
+
+function applyMigrations(db: Database.Database) {
+  ensureSchemaMigrationsTable(db);
+  const applied = getAppliedVersions(db);
+  const pending = migrations.filter((m) => !applied.has(m.version));
+  for (const migration of pending) {
+    const run = db.transaction(() => {
+      migration.fn(db);
+      db.prepare("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)")
+        .run(migration.version, migration.name, nowIso());
+    });
+    run();
+  }
+}
+
 function ensureColumn(db: Database.Database, table: string, column: string, definition: string) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
   if (!columns.some((item) => item.name === column)) {
@@ -374,7 +438,7 @@ export function upsertSearchHistory(query: string): void {
     INSERT INTO search_history (id, query, searched_at)
     VALUES (?, ?, ?)
     ON CONFLICT(query) DO UPDATE SET searched_at = excluded.searched_at
-  `).run(createId("srch"), normalized, Date.now());
+  `).run(createId("srch"), normalized, nowIso());
 }
 
 export function listSearchHistory(limit = 20): SearchHistoryItem[] {

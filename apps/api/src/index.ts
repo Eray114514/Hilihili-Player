@@ -829,12 +829,11 @@ app.post<{ Params: { id: string }; Body: CommentBody }>("/items/:id/comments", a
 app.get("/me/favorites", async () => ({
   folders: db.prepare(`
     SELECT ff.id, ff.name, ff.created_at AS createdAt,
-      COUNT(f.id) AS itemCount,
-      COALESCE(MAX(f.created_at), ff.created_at) AS updatedAt
+      COUNT(f.id) AS itemCount
     FROM favorite_folders ff
     LEFT JOIN favorites f ON f.folder_id = ff.id
     GROUP BY ff.id
-    ORDER BY updatedAt DESC
+    ORDER BY COALESCE(MAX(f.created_at), ff.created_at) DESC
   `).all()
 }));
 

@@ -15,7 +15,8 @@
   "dependencies": {
     "@hilihili/shared": "file:../shared",
     "better-sqlite3": "^12.5.0",
-    "drizzle-orm": "^0.45.1"
+    "drizzle-orm": "^0.45.1",
+    "ulid": "^3.0.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

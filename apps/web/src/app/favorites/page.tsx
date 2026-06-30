@@ -52,7 +52,7 @@ export default function FavoritesPage() {
     );
     setFolders((current) => [
       ...current,
-      { id: response.id, name: response.name, itemCount: 0, createdAt: response.createdAt, updatedAt: response.createdAt }
+      { id: response.id, name: response.name, itemCount: 0, createdAt: response.createdAt }
     ]);
     setNewFolderName("");
   }
@@ -180,7 +180,7 @@ export default function FavoritesPage() {
                             <div className="min-w-0 flex-1">
                               <div className="truncate font-medium">{folder.name}</div>
                               <p className="mt-0.5 text-xs text-white/42">
-                                {folder.itemCount} 个收藏 · {formatDate(folder.updatedAt)}
+                                {folder.itemCount} 个收藏 · {formatDate(folder.createdAt)}
                               </p>
                             </div>
                           </div>
