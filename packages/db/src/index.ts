@@ -387,12 +387,23 @@ function migrationSearchHistoryTimestamp(db: Database.Database) {
   `);
 }
 
+function migrationAddScanTracking(db: Database.Database) {
+  // ensureColumn is idempotent: new DBs reach this migration with the columns
+  // absent (baseline CREATE TABLE does not declare them), and old DBs reach it
+  // without the columns too. ALTER ADD COLUMN would fail if rerun, so we guard
+  // each addition with a PRAGMA table_info check.
+  ensureColumn(db, "media_items", "last_scanned_at", "TEXT");
+  ensureColumn(db, "media_parts", "compatibility_attempts", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "media_parts", "last_compatibility_attempt_at", "TEXT");
+}
+
 const migrations: Migration[] = [
   { version: 0, name: "baseline", fn: migrationBaseline },
   { version: 1, name: "watch_progress_repair", fn: migrationWatchProgressRepair },
   { version: 2, name: "clean_titles", fn: migrationCleanTitles },
   { version: 3, name: "merge_legacy_creators", fn: migrationMergeLegacyCreators },
   { version: 4, name: "search_history_timestamp", fn: migrationSearchHistoryTimestamp },
+  { version: 5, name: "add_scan_tracking", fn: migrationAddScanTracking },
 ];
 
 function ensureSchemaMigrationsTable(db: Database.Database) {

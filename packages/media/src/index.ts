@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import os from "node:os";
 import { createId, getDataDir, getSqlite, nowIso, type SqliteDatabase } from "@hilihili/db";
 import { isImagePath, isVideoPath, type MediaKind, type StructureStatus } from "@hilihili/shared";
+import pLimit from "p-limit";
 import sharp from "sharp";
 
 const require = createRequire(import.meta.url);
@@ -38,7 +40,15 @@ type MediaItemInput = {
 type TagIndexEntry = string[] | { add?: string[]; remove?: string[] };
 type TagsIndex = Record<string, TagIndexEntry>;
 type TagSource = "legacy" | "category" | "creator" | "content";
-type ScanContext = { seenItemIds: Set<string> };
+type ScanContext = {
+  seenItemIds: Set<string>;
+  // 单次扫描周期内的 fingerprint 缓存，避免同一文件被多次读取计算（multipart 算
+  // composite 时算一次，replaceParts/replaceImages 再算一次）。cache key 是文件路径。
+  fingerprintCache: Map<string, string | null>;
+  // 单次扫描周期内的 info.json / sidecar 缓存，避免 readLocalTagDefinitions 在
+  // category/creator/content 三层重复读同一文件。cache key 是 info 文件绝对路径。
+  infoCache: Map<string, InfoJson>;
+};
 export type ItemTag = { id: string; name: string; source: TagSource; sortOrder: number };
 type InfoJson = {
   title?: string;
@@ -289,11 +299,19 @@ export async function scanLibrary(libraryId: string) {
 
 function scanLibraryContents(db: SqliteDatabase, library: LibraryRow) {
   const tagsIndex = readTagsIndex(library.root_path);
-  const context: ScanContext = { seenItemIds: new Set() };
+  const context: ScanContext = { seenItemIds: new Set(), fingerprintCache: new Map(), infoCache: new Map() };
   const indexed = scanRoot(db, library, tagsIndex, context);
   pruneUnseenItems(db, library.id, context.seenItemIds);
   pruneEmptyCategories(db, library.id);
   return indexed;
+}
+
+// `_` 前缀目录统一跳过；例外白名单集中在此，避免 scanRoot/scanCategory/scanCreator/
+// scanFallbackFiles 4 处分散判断导致规则不一致。
+const SKIPPED_DIR_PREFIX = "_";
+const ALLOWED_UNDERSCORE_DIRS = new Set(["_待归类", "_无UP主"]);
+function shouldSkipDir(entry: string): boolean {
+  return entry.startsWith(SKIPPED_DIR_PREFIX) && !ALLOWED_UNDERSCORE_DIRS.has(entry);
 }
 
 function scanRoot(db: SqliteDatabase, library: LibraryRow, tagsIndex: TagsIndex, context: ScanContext) {
@@ -310,7 +328,7 @@ function scanRoot(db: SqliteDatabase, library: LibraryRow, tagsIndex: TagsIndex,
       continue;
     }
 
-    if (entry.startsWith("_") && entry !== "_待归类") {
+    if (shouldSkipDir(entry)) {
       continue;
     }
 
@@ -353,7 +371,7 @@ function scanCategory(db: SqliteDatabase, library: LibraryRow, categoryName: str
     }
 
     if (stat.isDirectory()) {
-      if (entry.startsWith("_") && entry !== "_无UP主") {
+      if (shouldSkipDir(entry)) {
         continue;
       }
       indexed += scanCreator(db, library, categoryId, categoryName, entry, fullPath, tagsIndex, context);
@@ -381,7 +399,7 @@ function scanCreator(
 ) {
   let indexed = 0;
   const displayCreator = creatorName === "_无UP主" ? "未知UP" : creatorName;
-  const creatorInfo = readInfoFile(join(creatorPath, "info.json"));
+  const creatorInfo = readInfoFile(join(creatorPath, "info.json"), context.infoCache);
   const creatorId = getOrCreateCreator(db, library.id, categoryId, displayCreator, creatorInfo, creatorPath);
   const profileAssets = new Set([resolveCreatorAssetPath(creatorPath, creatorInfo.avatar), resolveCreatorAssetPath(creatorPath, creatorInfo.banner)].filter((path): path is string => path !== null));
 
@@ -394,7 +412,7 @@ function scanCreator(
     if (profileAssets.has(fullPath)) continue;
 
     if (stat.isDirectory()) {
-      if (entry.startsWith("_")) {
+      if (shouldSkipDir(entry)) {
         continue;
       }
 
@@ -437,8 +455,17 @@ function scanFallbackFiles(
   creatorName: string,
   startPath: string,
   tagsIndex: TagsIndex,
-  context: ScanContext
+  context: ScanContext,
+  depth = 0,
+  visited: Set<string> = new Set()
 ) {
+  // symlink 环检测：用 realpath 去重，避免循环链接导致递归爆栈。
+  // 深度上限 10：防止恶意/损坏目录结构无限递归。两层保护都在进入循环前判定。
+  const realStart = safeRealpath(startPath);
+  if (!realStart || visited.has(realStart)) return 0;
+  visited.add(realStart);
+  if (depth >= 10) return 0;
+
   let indexed = 0;
   const categoryId = getOrCreateCategory(db, library.id, categoryName);
   const creatorId = getOrCreateCreator(db, library.id, categoryId, creatorName);
@@ -451,7 +478,7 @@ function scanFallbackFiles(
     }
 
     if (stat.isDirectory()) {
-      if (entry.startsWith("_") && entry !== "_待归类") {
+      if (shouldSkipDir(entry)) {
         continue;
       }
       const childEntries = safeReadDir(fullPath);
@@ -473,7 +500,7 @@ function scanFallbackFiles(
         indexed += indexGallery(db, library, categoryId, creatorId, creatorName, fullPath, images, tagsIndex, context);
         continue;
       }
-      indexed += scanFallbackFiles(db, library, categoryName, creatorName, fullPath, tagsIndex, context);
+      indexed += scanFallbackFiles(db, library, categoryName, creatorName, fullPath, tagsIndex, context, depth + 1, visited);
       continue;
     }
 
@@ -497,10 +524,16 @@ function indexMultiPartVideo(
 ) {
   const info = readInfo(folderPath);
   const title = info.title ?? cleanTitle(basename(folderPath));
-  const partFingerprints = videos.map((path) => fingerprintFile(path)).join("|");
-  const fingerprint = stableHash(`multi:${partFingerprints}`);
+  const partFingerprints = videos
+    .map((path) => fingerprintFile(path, context.fingerprintCache))
+    .filter((fp): fp is string => fp !== null);
+  if (partFingerprints.length !== videos.length) {
+    // 某 part 文件不可读，无法生成稳定 composite fingerprint，跳过整个 item。
+    return 0;
+  }
+  const fingerprint = stableHash(`multi:${partFingerprints.join("|")}`);
   const coverPath = findCover(folderPath);
-  const modifiedAt = new Date(Math.max(...videos.map((path) => statSync(path).mtimeMs))).toISOString();
+  const modifiedAt = new Date(Math.max(...videos.map((path) => safeStat(path)?.mtimeMs ?? 0))).toISOString();
   clearLegacyChildren(db, library.id, folderPath);
   const itemId = upsertMediaItem(db, {
     kind: "video",
@@ -521,10 +554,10 @@ function indexMultiPartVideo(
     structureStatus: "standard"
   }, context);
 
-  replaceParts(db, itemId, videos, info);
+  replaceParts(db, itemId, videos, info, context.fingerprintCache);
 
   db.prepare("DELETE FROM media_images WHERE item_id = ?").run(itemId);
-  applyTags(db, itemId, library.root_path, folderPath, tagsIndex);
+  applyTags(db, itemId, library.root_path, folderPath, tagsIndex, context.infoCache);
   return 1;
 }
 
@@ -544,6 +577,10 @@ function indexPost(
   const postBody = safeReadText(postPath).trim();
   const allFiles = [postPath, ...videos, ...images].filter(existsSync);
   const modifiedAt = newestModifiedAt(allFiles, folderPath);
+  const fingerprint = compositeFingerprint(allFiles, context.fingerprintCache);
+  if (fingerprint === null) {
+    return 0;
+  }
   clearLegacyChildren(db, library.id, folderPath);
   const itemId = upsertMediaItem(db, {
     kind: "post",
@@ -556,16 +593,16 @@ function indexPost(
     sourcePath: folderPath,
     rootPath: library.root_path,
     folderPath,
-    fingerprint: compositeFingerprint(allFiles),
+    fingerprint,
     coverPath: videos.length > 0 ? findCover(folderPath) : images[0] ?? null,
     contentPublishedAt: resolveContentDate(info, folderPath),
     fileModifiedAt: modifiedAt,
     hidden: Boolean(info.hidden),
     structureStatus: "standard"
   }, context);
-  replaceParts(db, itemId, videos, info);
-  replaceImages(db, itemId, images);
-  applyTags(db, itemId, library.root_path, folderPath, tagsIndex);
+  replaceParts(db, itemId, videos, info, context.fingerprintCache);
+  replaceImages(db, itemId, images, context.fingerprintCache);
+  applyTags(db, itemId, library.root_path, folderPath, tagsIndex, context.infoCache);
   return 1;
 }
 
@@ -582,6 +619,10 @@ function indexGallery(
 ) {
   if (images.length === 0) return 0;
   const info = readInfo(folderPath);
+  const fingerprint = compositeFingerprint(images, context.fingerprintCache);
+  if (fingerprint === null) {
+    return 0;
+  }
   clearLegacyChildren(db, library.id, folderPath);
   const itemId = upsertMediaItem(db, {
     kind: "image",
@@ -594,7 +635,7 @@ function indexGallery(
     sourcePath: folderPath,
     rootPath: library.root_path,
     folderPath,
-    fingerprint: compositeFingerprint(images),
+    fingerprint,
     coverPath: images[0] ?? null,
     contentPublishedAt: resolveContentDate(info, folderPath, images),
     fileModifiedAt: newestModifiedAt(images, folderPath),
@@ -602,8 +643,8 @@ function indexGallery(
     structureStatus: "standard"
   }, context);
   clearParts(db, itemId);
-  replaceImages(db, itemId, images);
-  applyTags(db, itemId, library.root_path, folderPath, tagsIndex);
+  replaceImages(db, itemId, images, context.fingerprintCache);
+  applyTags(db, itemId, library.root_path, folderPath, tagsIndex, context.infoCache);
   return 1;
 }
 
@@ -624,7 +665,14 @@ function indexSingleFile(
   const title = sidecarInfo.title ?? deriveTitleFromFile(filePath, creatorName);
   const kind: MediaKind = isVideoPath(filePath) ? "video" : "image";
   const coverPath = kind === "video" ? findCover(folderPath) : filePath;
-  const fileStat = statSync(filePath);
+  const fingerprint = fingerprintFile(filePath, context.fingerprintCache);
+  if (fingerprint === null) {
+    return 0;
+  }
+  const fileStat = safeStat(filePath);
+  if (!fileStat) {
+    return 0;
+  }
   const itemId = upsertMediaItem(db, {
     kind,
     title,
@@ -636,7 +684,7 @@ function indexSingleFile(
     sourcePath: filePath,
     rootPath: library.root_path,
     folderPath,
-    fingerprint: fingerprintFile(filePath),
+    fingerprint,
     coverPath,
     contentPublishedAt: resolveContentDate(sidecarInfo, filePath),
     fileModifiedAt: fileStat.mtime.toISOString(),
@@ -645,26 +693,34 @@ function indexSingleFile(
   }, context);
 
   if (kind === "video") {
-    replaceParts(db, itemId, [filePath], sidecarInfo);
+    replaceParts(db, itemId, [filePath], sidecarInfo, context.fingerprintCache);
     db.prepare("DELETE FROM media_images WHERE item_id = ?").run(itemId);
   } else {
     clearParts(db, itemId);
-    replaceImages(db, itemId, [filePath]);
+    replaceImages(db, itemId, [filePath], context.fingerprintCache);
   }
 
-  applyTags(db, itemId, library.root_path, filePath, tagsIndex);
+  applyTags(db, itemId, library.root_path, filePath, tagsIndex, context.infoCache);
   return 1;
 }
 
 function upsertMediaItem(db: SqliteDatabase, input: MediaItemInput, context: ScanContext) {
   const now = nowIso();
   const relativePath = normalizeRelative(relative(input.rootPath, input.sourcePath));
-  const existing = (db.prepare("SELECT id, fingerprint, generated_cover_path FROM media_items WHERE library_id = ? AND relative_path = ? ORDER BY updated_at DESC LIMIT 1")
-    .get(input.libraryId, relativePath) ?? db.prepare("SELECT id, fingerprint, generated_cover_path FROM media_items WHERE fingerprint = ?").get(input.fingerprint)) as
-    | { id: string; fingerprint: string; generated_cover_path: string | null }
+  const existing = (db.prepare("SELECT id, fingerprint, generated_cover_path, file_modified_at FROM media_items WHERE library_id = ? AND relative_path = ? ORDER BY updated_at DESC LIMIT 1")
+    .get(input.libraryId, relativePath) ?? db.prepare("SELECT id, fingerprint, generated_cover_path, file_modified_at FROM media_items WHERE fingerprint = ?").get(input.fingerprint)) as
+    | { id: string; fingerprint: string; generated_cover_path: string | null; file_modified_at: string | null }
     | undefined;
 
   if (existing) {
+    // mtime 增量扫描：文件未修改时跳过全字段重写，仅刷新 last_scanned_at。
+    // 调用方仍会计算 fingerprint，但 DB 写入开销和重复 upsert 被规避。
+    if (existing.file_modified_at && existing.file_modified_at === input.fileModifiedAt) {
+      db.prepare("UPDATE media_items SET last_scanned_at = ?, updated_at = ? WHERE id = ?")
+        .run(now, now, existing.id);
+      context.seenItemIds.add(existing.id);
+      return existing.id;
+    }
     const generatedCoverPath = existing.fingerprint === input.fingerprint && existing.generated_cover_path && existsSync(existing.generated_cover_path)
       ? existing.generated_cover_path
       : null;
@@ -672,7 +728,7 @@ function upsertMediaItem(db: SqliteDatabase, input: MediaItemInput, context: Sca
       UPDATE media_items
       SET kind = ?, title = ?, post_body = ?, description = ?, library_id = ?, category_id = ?, creator_id = ?, source_path = ?,
           relative_path = ?, folder_path = ?, cover_path = ?, generated_cover_path = ?, content_published_at = ?, file_modified_at = ?,
-          fingerprint = ?, thumbnail_status = ?, thumbnail_error = NULL, hidden = ?, structure_status = ?, updated_at = ?
+          fingerprint = ?, thumbnail_status = ?, thumbnail_error = NULL, hidden = ?, structure_status = ?, last_scanned_at = ?, updated_at = ?
       WHERE id = ?
     `).run(
       input.kind,
@@ -694,6 +750,7 @@ function upsertMediaItem(db: SqliteDatabase, input: MediaItemInput, context: Sca
       input.hidden ? 1 : 0,
       input.structureStatus,
       now,
+      now,
       existing.id
     );
     context.seenItemIds.add(existing.id);
@@ -705,9 +762,9 @@ function upsertMediaItem(db: SqliteDatabase, input: MediaItemInput, context: Sca
     INSERT INTO media_items (
       id, kind, title, library_id, category_id, creator_id, source_path, relative_path,
       folder_path, fingerprint, cover_path, generated_cover_path, thumbnail_status, content_published_at, post_body, description,
-      file_modified_at, hidden, structure_status, first_seen_at, updated_at
+      file_modified_at, hidden, structure_status, first_seen_at, last_scanned_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.kind,
@@ -727,6 +784,7 @@ function upsertMediaItem(db: SqliteDatabase, input: MediaItemInput, context: Sca
     input.fileModifiedAt,
     input.hidden ? 1 : 0,
     input.structureStatus,
+    now,
     now,
     now
   );
@@ -805,8 +863,8 @@ function createCreatorVideoMessage(db: SqliteDatabase, creatorId: string, itemId
   `).run(createId("msg"), creatorId, itemId, createdAt);
 }
 
-function applyTags(db: SqliteDatabase, itemId: string, rootPath: string, targetPath: string, tagsIndex: TagsIndex) {
-  const tags = resolveTags(rootPath, targetPath, tagsIndex);
+function applyTags(db: SqliteDatabase, itemId: string, rootPath: string, targetPath: string, tagsIndex: TagsIndex, cache?: Map<string, InfoJson>) {
+  const tags = resolveTags(rootPath, targetPath, tagsIndex, cache);
 
   db.prepare("DELETE FROM media_tags WHERE media_item_id = ?").run(itemId);
 
@@ -820,13 +878,13 @@ function applyTags(db: SqliteDatabase, itemId: string, rootPath: string, targetP
   }
 }
 
-function resolveTags(rootPath: string, targetPath: string, tagsIndex: TagsIndex): { name: string; source: TagSource; sortOrder: number }[] {
+function resolveTags(rootPath: string, targetPath: string, tagsIndex: TagsIndex, cache?: Map<string, InfoJson>): { name: string; source: TagSource; sortOrder: number }[] {
   const relativePath = targetPath.startsWith(rootPath)
     ? normalizeRelative(relative(rootPath, targetPath))
     : normalizeRelative(targetPath);
   const withoutExtension = relativePath.replace(/\.[^.]+$/, "");
   const segments = withoutExtension.split("/");
-  const local = readLocalTagDefinitions(rootPath, targetPath, segments);
+  const local = readLocalTagDefinitions(rootPath, targetPath, segments, cache);
   const layers: { entry: TagIndexEntry | undefined; source: TagSource }[] = [
     { entry: local.category ?? tagsIndex[segments[0]], source: local.category ? "category" : "legacy" },
     { entry: local.creator ?? tagsIndex[segments.slice(0, 2).join("/")], source: local.creator ? "creator" : "legacy" }
@@ -868,13 +926,13 @@ function resolveTags(rootPath: string, targetPath: string, tagsIndex: TagsIndex)
   return Array.from(tags.values()).map((tag, sortOrder) => ({ ...tag, sortOrder }));
 }
 
-function readLocalTagDefinitions(rootPath: string, targetPath: string, segments: string[]) {
+function readLocalTagDefinitions(rootPath: string, targetPath: string, segments: string[], cache?: Map<string, InfoJson>) {
   if (!targetPath.startsWith(rootPath)) return {};
-  const category = segments.length >= 2 ? readTagDefinition(readInfo(join(rootPath, segments[0]))) : undefined;
-  const creator = segments.length >= 3 ? readTagDefinition(readInfo(join(rootPath, segments[0], segments[1]))) : undefined;
+  const category = segments.length >= 2 ? readTagDefinition(readInfo(join(rootPath, segments[0]), cache)) : undefined;
+  const creator = segments.length >= 3 ? readTagDefinition(readInfo(join(rootPath, segments[0], segments[1]), cache)) : undefined;
   const content = safeStat(targetPath)?.isDirectory()
-    ? readTagDefinition(readInfo(targetPath))
-    : readTagDefinition(readFileSidecar(targetPath));
+    ? readTagDefinition(readInfo(targetPath, cache))
+    : readTagDefinition(readFileSidecar(targetPath, cache));
   return { category, creator, content };
 }
 
@@ -906,7 +964,7 @@ function addResolvedTag(
   tags.set(key, { name, source, sortOrder: tags.size });
 }
 
-function replaceParts(db: SqliteDatabase, itemId: string, videos: string[], info: InfoJson) {
+function replaceParts(db: SqliteDatabase, itemId: string, videos: string[], info: InfoJson, cache: Map<string, string | null>) {
   // Keep a part row when the file is still present. watch_progress references
   // media_parts.id, so deleting and recreating every row on each startup scan
   // silently disconnects every saved resume position after an image update.
@@ -925,8 +983,10 @@ function replaceParts(db: SqliteDatabase, itemId: string, videos: string[], info
   videos.forEach((path, index) => {
     const partName = basename(path, extname(path));
     const pKey = partName.match(/^p(\d+)$/i)?.[0].toUpperCase();
-    const stat = statSync(path);
-    upsertPartWithSubtitles(db, itemId, pKey && info.p_titles?.[pKey] ? info.p_titles[pKey] : cleanTitle(partName), index + 1, path, stat.size, fingerprintFile(path));
+    const stat = safeStat(path);
+    const fp = fingerprintFile(path, cache);
+    if (fp === null || !stat) return; // 文件不可读，跳过该 part
+    upsertPartWithSubtitles(db, itemId, pKey && info.p_titles?.[pKey] ? info.p_titles[pKey] : cleanTitle(partName), index + 1, path, stat.size, fp);
   });
 }
 
@@ -935,7 +995,7 @@ function clearParts(db: SqliteDatabase, itemId: string) {
   db.prepare("DELETE FROM media_parts WHERE item_id = ?").run(itemId);
 }
 
-function replaceImages(db: SqliteDatabase, itemId: string, images: string[]) {
+function replaceImages(db: SqliteDatabase, itemId: string, images: string[], cache: Map<string, string | null>) {
   db.prepare("DELETE FROM media_images WHERE item_id = ?").run(itemId);
   // media_images.path 同样是 UNIQUE 约束，DELETE 只按 item_id 清理，
   // 残留在其它 item 上的同路径行会让下面的 INSERT 失败。复用已存在行。
@@ -949,8 +1009,9 @@ function replaceImages(db: SqliteDatabase, itemId: string, images: string[]) {
     VALUES (?, ?, ?, ?, ?, ?, NULL)
   `);
   images.forEach((path, index) => {
-    const stat = statSync(path);
-    const fp = fingerprintFile(path);
+    const stat = safeStat(path);
+    const fp = fingerprintFile(path, cache);
+    if (fp === null || !stat) return; // 文件不可读，跳过该 image
     const result = updateExisting.run(itemId, index + 1, stat.size, fp, path);
     if (result.changes === 0) {
       insertNew.run(createId("img"), itemId, path, index + 1, stat.size, fp);
@@ -960,23 +1021,52 @@ function replaceImages(db: SqliteDatabase, itemId: string, images: string[]) {
 
 function clearLegacyChildren(db: SqliteDatabase, libraryId: string, folderPath: string) {
   const prefix = `${folderPath}${sep}`;
-  const rows = db.prepare("SELECT id, source_path FROM media_items WHERE library_id = ?").all(libraryId) as { id: string; source_path: string }[];
-  const deleteInteractions = db.prepare("DELETE FROM interactions WHERE target_type = 'item' AND target_id = ?");
-  const deleteMediaTags = db.prepare("DELETE FROM media_tags WHERE media_item_id = ?");
-  const deleteItem = db.prepare("DELETE FROM media_items WHERE id = ?");
-  for (const row of rows) {
-    if (row.source_path.startsWith(prefix)) {
-      deleteInteractions.run(row.id);
-      deleteMediaTags.run(row.id);
-      deleteItem.run(row.id);
+  // 用 SQL LIKE 前缀查询替代 SELECT 全表 + JS startsWith，避免 O(N×M)。
+  // interactions 表的外键未配 cascade，需手动删；media_tags/media_images/media_parts
+  // 由 media_items 的 ON DELETE CASCADE 自动清理（schema.ts）。
+  // 路径中 `%`/`_` 会被 LIKE 当通配符，但实际媒体路径极少含这些字符，保持简单不转义。
+  const staleIds = db.prepare(`
+    SELECT id FROM media_items
+    WHERE library_id = ? AND source_path LIKE ? || '%'
+  `).all(libraryId, prefix) as { id: string }[];
+  if (staleIds.length === 0) return;
+  const remove = db.transaction((ids: string[]) => {
+    const deleteInteractions = db.prepare("DELETE FROM interactions WHERE target_type = 'item' AND target_id = ?");
+    const deleteItem = db.prepare("DELETE FROM media_items WHERE id = ?");
+    for (const id of ids) {
+      deleteInteractions.run(id);
+      deleteItem.run(id); // media_tags/media_images/media_parts 由 cascade 删除
     }
-  }
+  });
+  remove(staleIds.map((r) => r.id));
 }
 
 function pruneUnseenItems(db: SqliteDatabase, libraryId: string, seenItemIds: Set<string>) {
   const existing = db.prepare("SELECT id FROM media_items WHERE library_id = ?").all(libraryId) as { id: string }[];
   const staleIds = existing.map((row) => row.id).filter((id) => !seenItemIds.has(id));
   if (staleIds.length === 0) return;
+
+  // 收集 stale item 关联的生成文件路径，DB 删除后清理物理缓存文件。
+  // generated_cover_path 是 item 级封面；stream_path/preview_sprite_path 是 part 级；
+  // thumbnail_path 是 image 级缩略图。这些都存在 media-cache 目录下，不清理会泄漏。
+  const placeholders = staleIds.map(() => "?").join(",");
+  const stalePaths: string[] = [];
+  const itemRows = db.prepare(`SELECT generated_cover_path FROM media_items WHERE id IN (${placeholders})`)
+    .all(...staleIds) as { generated_cover_path: string | null }[];
+  for (const row of itemRows) {
+    if (row.generated_cover_path) stalePaths.push(row.generated_cover_path);
+  }
+  const partRows = db.prepare(`SELECT stream_path, preview_sprite_path FROM media_parts WHERE item_id IN (${placeholders})`)
+    .all(...staleIds) as { stream_path: string | null; preview_sprite_path: string | null }[];
+  for (const row of partRows) {
+    if (row.stream_path) stalePaths.push(row.stream_path);
+    if (row.preview_sprite_path) stalePaths.push(row.preview_sprite_path);
+  }
+  const imageRows = db.prepare(`SELECT thumbnail_path FROM media_images WHERE item_id IN (${placeholders})`)
+    .all(...staleIds) as { thumbnail_path: string | null }[];
+  for (const row of imageRows) {
+    if (row.thumbnail_path) stalePaths.push(row.thumbnail_path);
+  }
 
   const remove = db.transaction((ids: string[]) => {
     const deleteInteractions = db.prepare("DELETE FROM interactions WHERE target_type = 'item' AND target_id = ?");
@@ -989,6 +1079,11 @@ function pruneUnseenItems(db: SqliteDatabase, libraryId: string, seenItemIds: Se
     }
   });
   remove(staleIds);
+
+  // DB 删除成功后再清理物理缓存文件，避免删错（事务回滚时文件已删无法恢复）。
+  for (const path of stalePaths) {
+    tryUnlink(path);
+  }
   console.log(`[media] pruned ${staleIds.length} stale item(s) from library ${libraryId}`);
 }
 
@@ -1012,16 +1107,27 @@ function pruneOrphanTags(db: SqliteDatabase) {
   }
 }
 
-function fingerprintFile(filePath: string) {
-  const stat = statSync(filePath);
-  const buffer = Buffer.alloc(Math.min(65536, stat.size));
-  const handle = openSync(filePath, "r");
-  try {
-    readSync(handle, buffer, 0, buffer.length, 0);
-  } finally {
-    closeSync(handle);
+function fingerprintFile(filePath: string, cache: Map<string, string | null>): string | null {
+  if (cache.has(filePath)) {
+    return cache.get(filePath) as string | null;
   }
-  return stableHash(`${stat.size}:${stat.mtimeMs}:${buffer.toString("base64")}`);
+  let result: string | null = null;
+  try {
+    const stat = statSync(filePath);
+    const buffer = Buffer.alloc(Math.min(65536, stat.size));
+    const handle = openSync(filePath, "r");
+    try {
+      readSync(handle, buffer, 0, buffer.length, 0);
+    } finally {
+      closeSync(handle);
+    }
+    result = stableHash(`${stat.size}:${stat.mtimeMs}:${buffer.toString("base64")}`);
+  } catch (error) {
+    console.warn(`[media] fingerprint failed: ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+    result = null;
+  }
+  cache.set(filePath, result);
+  return result;
 }
 
 function stableHash(value: string) {
@@ -1200,25 +1306,30 @@ function tagKey(value: string) {
   return value.toLocaleLowerCase("zh-CN");
 }
 
-function readInfo(folderPath: string): InfoJson {
-  return readInfoFile(join(folderPath, "info.json"));
+function readInfo(folderPath: string, cache?: Map<string, InfoJson>): InfoJson {
+  return readInfoFile(join(folderPath, "info.json"), cache);
 }
 
-function readFileSidecar(filePath: string): InfoJson {
+function readFileSidecar(filePath: string, cache?: Map<string, InfoJson>): InfoJson {
   const extension = extname(filePath);
-  return readInfoFile(`${filePath.slice(0, -extension.length)}.info.json`);
+  return readInfoFile(`${filePath.slice(0, -extension.length)}.info.json`, cache);
 }
 
-function readInfoFile(path: string): InfoJson {
-  if (!existsSync(path)) {
-    return {};
+function readInfoFile(path: string, cache?: Map<string, InfoJson>): InfoJson {
+  if (cache) {
+    const cached = cache.get(path);
+    if (cached !== undefined) return cached;
   }
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as InfoJson;
-  } catch {
-    console.warn(`[media] invalid info.json: ${path}`);
-    return {};
+  let result: InfoJson = {};
+  if (existsSync(path)) {
+    try {
+      result = JSON.parse(readFileSync(path, "utf8")) as InfoJson;
+    } catch {
+      console.warn(`[media] invalid info.json: ${path}`);
+    }
   }
+  if (cache) cache.set(path, result);
+  return result;
 }
 
 function findCover(folderPath: string) {
@@ -1303,6 +1414,10 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
     return;
   }
   const placeholders = libraryIds.map(() => "?").join(",");
+  // 三个生成阶段都是 IO/CPU 密集（ffmpeg 子进程 + sharp），原版串行 for...of
+  // 让单核 worker 一次只处理一个文件。用 p-limit 限制并发为 CPU 核数 - 1，
+  // 留一个核给主线程事件循环；ffmpeg/sharp 自身多线程已利用其他核。
+  const limiter = pLimit(Math.max(1, os.cpus().length - 1));
   // 用 MIN(part_index) 取首个分P，而非硬编码 part_index = 1。
   // upsertPartWithSubtitles 按 path 全局复用分P，clearParts 按 item_id 删除，
   // 在目录重组/分P跨 item 复用/扫描中断等场景下，item 的最小 part_index 可能不是 1。
@@ -1324,7 +1439,9 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
     .run(coverRows.length, runId);
   let ready = 0;
   let failed = 0;
-  for (const row of coverRows) {
+  // ready/failed 是闭包共享计数器；JS 单线程，await 让出期间不会有竞态写入，
+  // 各 limiter 回调按 await 完成顺序串行更新计数器后再写 scan_runs。
+  await Promise.all(coverRows.map((row) => limiter(async () => {
     try {
       const cachedPath = row.generated_cover_path && existsSync(row.generated_cover_path)
         ? row.generated_cover_path
@@ -1338,17 +1455,42 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
       failed += 1;
     }
     db.prepare("UPDATE scan_runs SET thumbnails_ready = ?, thumbnails_failed = ? WHERE id = ?").run(ready, failed, runId);
-  }
+  })));
 
   const allParts = db.prepare(`
-    SELECT mp.id, mp.path, mp.fingerprint, mp.duration_seconds, mp.preview_sprite_path, mp.stream_path
+    SELECT mp.id, mp.path, mp.fingerprint, mp.duration_seconds, mp.preview_sprite_path, mp.stream_path,
+           mp.compatibility_status, mp.compatibility_attempts, mp.last_compatibility_attempt_at
     FROM media_parts mp
     JOIN media_items mi ON mi.id = mp.item_id
     WHERE mi.library_id IN (${placeholders}) AND mi.kind IN ('video', 'post')
-  `).all(...libraryIds) as { id: string; path: string; fingerprint: string; duration_seconds: number | null; preview_sprite_path: string | null; stream_path: string | null }[];
+      AND NOT (mp.compatibility_status = 'ready' AND mp.stream_path IS NOT NULL)
+      AND NOT (
+        mp.compatibility_status = 'failed'
+        AND mp.last_compatibility_attempt_at IS NOT NULL
+        AND datetime(mp.last_compatibility_attempt_at) > datetime('now', '-24 hours')
+      )
+  `).all(...libraryIds) as {
+    id: string; path: string; fingerprint: string; duration_seconds: number | null;
+    preview_sprite_path: string | null; stream_path: string | null;
+    compatibility_status: "pending" | "ready" | "failed";
+    compatibility_attempts: number; last_compatibility_attempt_at: string | null;
+  }[];
 
-  for (const part of allParts) {
+  await Promise.all(allParts.map((part) => limiter(async () => {
     let duration = part.duration_seconds ?? 0;
+    // 双保险：ready 但 stream_path 物理文件被删，重置 pending 重试。
+    // SQL 已跳过 ready 且 stream_path 非空的常规情况，这里只兜底文件丢失的边缘场景。
+    if (part.compatibility_status === "ready" && part.stream_path && !existsSync(part.stream_path)) {
+      db.prepare("UPDATE media_parts SET compatibility_status = 'pending', stream_path = NULL, stream_size_bytes = NULL, compatibility_error = NULL WHERE id = ?")
+        .run(part.id);
+      part.compatibility_status = "pending";
+      part.stream_path = null;
+    }
+    // failed 双保险：SQL 已过滤 24h 内重试的，若仍选中则跳过。
+    if (part.compatibility_status === "failed") {
+      return;
+    }
+    const skipCompatibility = part.compatibility_status === "ready";
     try {
       const mediaInfo = await probeMedia(part.path);
       duration ||= mediaInfo.duration;
@@ -1356,29 +1498,45 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
         db.prepare("UPDATE media_parts SET duration_seconds = ? WHERE id = ?").run(duration, part.id);
       }
 
-      if (isBrowserPlayable(part.path, mediaInfo) && hasFastStart(part.path)) {
-        db.prepare("UPDATE media_parts SET stream_path = NULL, stream_size_bytes = NULL, compatibility_status = 'ready', compatibility_error = NULL WHERE id = ?")
-          .run(part.id);
-      } else if (isBrowserPlayable(part.path, mediaInfo)) {
-        // 编码兼容但 moov atom 在文件末尾，remux 为 faststart（流复制，不重新编码）
-        const streamPath = part.stream_path && existsSync(part.stream_path)
-          ? part.stream_path
-          : await remuxWithFaststart(part.path, part.fingerprint);
-        db.prepare("UPDATE media_parts SET stream_path = ?, stream_size_bytes = ?, compatibility_status = 'ready', compatibility_error = NULL WHERE id = ?")
-          .run(streamPath, statSync(streamPath).size, part.id);
-      } else {
-        const streamPath = part.stream_path && existsSync(part.stream_path)
-          ? part.stream_path
-          : await generateCompatibleVideo(part.path, part.fingerprint);
-        db.prepare("UPDATE media_parts SET stream_path = ?, stream_size_bytes = ?, compatibility_status = 'ready', compatibility_error = NULL WHERE id = ?")
-          .run(streamPath, statSync(streamPath).size, part.id);
+      if (!skipCompatibility) {
+        if (isBrowserPlayable(part.path, mediaInfo) && hasFastStart(part.path)) {
+          db.prepare("UPDATE media_parts SET stream_path = NULL, stream_size_bytes = NULL, compatibility_status = 'ready', compatibility_error = NULL, compatibility_attempts = 0, last_compatibility_attempt_at = NULL WHERE id = ?")
+            .run(part.id);
+        } else if (isBrowserPlayable(part.path, mediaInfo)) {
+          // 编码兼容但 moov atom 在文件末尾，remux 为 faststart（流复制，不重新编码）
+          const streamPath = part.stream_path && existsSync(part.stream_path)
+            ? part.stream_path
+            : await remuxWithFaststart(part.path, part.fingerprint);
+          const streamStat = safeStat(streamPath);
+          if (!streamStat) {
+            throw new Error(`stream file missing after remux: ${streamPath}`);
+          }
+          db.prepare("UPDATE media_parts SET stream_path = ?, stream_size_bytes = ?, compatibility_status = 'ready', compatibility_error = NULL, compatibility_attempts = 0, last_compatibility_attempt_at = NULL WHERE id = ?")
+            .run(streamPath, streamStat.size, part.id);
+        } else {
+          const streamPath = part.stream_path && existsSync(part.stream_path)
+            ? part.stream_path
+            : await generateCompatibleVideo(part.path, part.fingerprint);
+          const streamStat = safeStat(streamPath);
+          if (!streamStat) {
+            throw new Error(`stream file missing after transcode: ${streamPath}`);
+          }
+          db.prepare("UPDATE media_parts SET stream_path = ?, stream_size_bytes = ?, compatibility_status = 'ready', compatibility_error = NULL, compatibility_attempts = 0, last_compatibility_attempt_at = NULL WHERE id = ?")
+            .run(streamPath, streamStat.size, part.id);
+        }
       }
 
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      db.prepare("UPDATE media_parts SET compatibility_status = 'failed', compatibility_error = ? WHERE id = ?").run(message, part.id);
-      console.warn(`[media] compatibility preparation failed: ${part.path}: ${message}`);
-      continue;
+      if (skipCompatibility) {
+        // ready part probe 失败不致命：保留 ready 状态，仅记录，继续尝试 sprite。
+        console.warn(`[media] probe failed for ready part: ${part.path}: ${message}`);
+      } else {
+        db.prepare("UPDATE media_parts SET compatibility_status = 'failed', compatibility_error = ?, compatibility_attempts = compatibility_attempts + 1, last_compatibility_attempt_at = ? WHERE id = ?")
+          .run(message, nowIso(), part.id);
+        console.warn(`[media] compatibility preparation failed: ${part.path}: ${message}`);
+        return;
+      }
     }
 
     try {
@@ -1394,7 +1552,7 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
     } catch (error) {
       console.warn(`[media] preview sprite failed: ${part.path}: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }
+  })));
 
   const imageRows = db.prepare(`
     SELECT mimg.id, mimg.path, mimg.fingerprint, mimg.thumbnail_path, mimg.is_animated
@@ -1402,9 +1560,9 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
     JOIN media_items mi ON mi.id = mimg.item_id
     WHERE mi.library_id IN (${placeholders})
   `).all(...libraryIds) as { id: string; path: string; fingerprint: string; thumbnail_path: string | null; is_animated: number | null }[];
-  for (const image of imageRows) {
+  await Promise.all(imageRows.map((image) => limiter(async () => {
     try {
-      if (!existsSync(image.path)) continue;
+      if (!existsSync(image.path)) return;
       const meta = await sharp(image.path, { animated: true }).metadata();
       const isAnimated = (meta.pages ?? 1) > 1;
       const frameCount = isAnimated ? (meta.pages ?? null) : null;
@@ -1423,10 +1581,11 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
       }
       db.prepare("UPDATE media_images SET width = ?, height = ?, thumbnail_path = ?, is_animated = ?, frame_count = ?, duration_ms = ? WHERE id = ?")
         .run(meta.width ?? null, meta.height ?? null, thumbnailPath, isAnimated ? 1 : 0, frameCount, durationMs, image.id);
-    } catch {
+    } catch (error) {
       // Keep the original available even when thumbnail generation fails.
+      console.warn(`[media] image thumbnail failed: ${image.path}: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }
+  })));
 }
 
 async function generateImageThumbnail(imagePath: string, fingerprint: string, isAnimated = false) {
@@ -1583,6 +1742,10 @@ function isBrowserPlayable(videoPath: string, media: ProbedMedia) {
  * 检查 MP4 文件的 moov atom 是否在文件开头（faststart）。
  * 浏览器需要 moov 在开头才能流式播放；若 moov 在末尾，浏览器需先下载整个文件才能播放。
  * 仅适用于 MP4/M4V/MOV 容器，其他容器（如 WebM）始终返回 true。
+ *
+ * 按 64KB 块循环读取，最多扫 16MB。原版只读首 64KB，moov atom 在大文件
+ * 64KB 之外时（典型如未做 faststart 的长视频）会误判为 faststart 失败，
+ * 触发不必要的 remux。循环到任一 atom 出现即可定胜负。
  */
 function hasFastStart(videoPath: string): boolean {
   const extension = extname(videoPath).toLowerCase();
@@ -1591,12 +1754,27 @@ function hasFastStart(videoPath: string): boolean {
   }
   let fd: number | null = null;
   try {
-    const buffer = Buffer.alloc(65536);
     fd = openSync(videoPath, "r");
-    const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
-    const content = buffer.subarray(0, bytesRead).toString("latin1");
-    const moovIndex = content.indexOf("moov");
-    const mdatIndex = content.indexOf("mdat");
+    const buffer = Buffer.alloc(65536);
+    let offset = 0;
+    let moovIndex = -1;
+    let mdatIndex = -1;
+    while (moovIndex === -1 && mdatIndex === -1) {
+      const bytesRead = readSync(fd, buffer, 0, buffer.length, offset);
+      if (bytesRead === 0) break;
+      const content = buffer.subarray(0, bytesRead).toString("latin1");
+      if (moovIndex === -1) {
+        const localMoov = content.indexOf("moov");
+        if (localMoov !== -1) moovIndex = offset + localMoov;
+      }
+      if (mdatIndex === -1) {
+        const localMdat = content.indexOf("mdat");
+        if (localMdat !== -1) mdatIndex = offset + localMdat;
+      }
+      if (moovIndex !== -1 || mdatIndex !== -1) break;
+      offset += bytesRead;
+      if (offset > 16 * 1024 * 1024) break; // 最多读 16MB
+    }
     if (moovIndex === -1) return false;
     if (mdatIndex === -1) return true;
     return moovIndex < mdatIndex;
@@ -1668,15 +1846,25 @@ function getFfprobePath() {
   return (require("ffprobe-static") as { path?: string }).path ?? "ffprobe";
 }
 
-function runProcess(command: string, args: string[]) {
+function runProcess(command: string, args: string[], timeoutMs = 300000) {
   return new Promise<string>((resolvePromise, reject) => {
     const child = spawn(command, args, { windowsHide: true });
     let stdout = "";
     let stderr = "";
+    // 5 分钟兜底超时：ffmpeg/ffprobe 正常秒级返回，转码长视频也应在 5 分钟内完成。
+    // 超时后 SIGKILL 子进程，避免 worker 卡死在挂起的 ffmpeg 上阻塞整个扫描队列。
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`${command} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
     child.on("close", (code) => {
+      clearTimeout(timer);
       if (code === 0) {
         resolvePromise(stdout);
       } else {
@@ -1784,8 +1972,14 @@ function isContentImage(path: string) {
   return isImagePath(path) && !/^(cover|folder)\.(?:jpe?g|png|webp|gif|avif)$/i.test(basename(path));
 }
 
-function compositeFingerprint(paths: string[]) {
-  return stableHash(paths.map((path) => `${basename(path)}:${fingerprintFile(path)}`).join("|"));
+function compositeFingerprint(paths: string[], cache: Map<string, string | null>): string | null {
+  const parts: string[] = [];
+  for (const path of paths) {
+    const fp = fingerprintFile(path, cache);
+    if (fp === null) return null;
+    parts.push(`${basename(path)}:${fp}`);
+  }
+  return stableHash(parts.join("|"));
 }
 
 function newestModifiedAt(paths: string[], fallbackPath: string) {
@@ -1811,7 +2005,8 @@ function partNumber(path: string) {
 function safeReadDir(path: string) {
   try {
     return readdirSync(path);
-  } catch {
+  } catch (error) {
+    console.warn(`[media] unable to read directory: ${path}: ${error instanceof Error ? error.message : String(error)}`);
     return [];
   }
 }
@@ -1819,7 +2014,19 @@ function safeReadDir(path: string) {
 function safeStat(path: string) {
   try {
     return statSync(path);
-  } catch {
+  } catch (error) {
+    console.warn(`[media] unable to stat: ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+// realpath 失败时返回 null（路径不存在 / 权限不足等），调用方据此跳过环检测。
+// 用于 scanFallbackFiles 的 symlink 环检测：用真实路径去重，避免循环链接递归爆栈。
+function safeRealpath(path: string) {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    console.warn(`[media] unable to realpath: ${path}: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
 }

@@ -65,6 +65,7 @@ export const mediaItems = sqliteTable(
     hidden: integer("hidden", { mode: "boolean" }).notNull().default(false),
     structureStatus: text("structure_status", { enum: ["standard", "fallback"] }).notNull(),
     firstSeenAt: text("first_seen_at").notNull(),
+    lastScannedAt: text("last_scanned_at"),
     updatedAt: text("updated_at").notNull()
   },
   (table) => ({
@@ -110,6 +111,8 @@ export const mediaParts = sqliteTable(
     streamSizeBytes: integer("stream_size_bytes"),
     compatibilityStatus: text("compatibility_status", { enum: ["pending", "ready", "failed"] }).notNull().default("pending"),
     compatibilityError: text("compatibility_error"),
+    compatibilityAttempts: integer("compatibility_attempts").notNull().default(0),
+    lastCompatibilityAttemptAt: text("last_compatibility_attempt_at"),
     durationSeconds: real("duration_seconds"),
     fingerprint: text("fingerprint").notNull(),
     previewSpritePath: text("preview_sprite_path"),

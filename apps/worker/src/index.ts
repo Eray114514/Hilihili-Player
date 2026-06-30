@@ -1,12 +1,15 @@
 import { getSqlite } from "@hilihili/db";
 import { enqueueScan, processNextScanRun } from "@hilihili/media";
-import { watch, type FSWatcher } from "node:fs";
+import { watch, type FSWatcher } from "chokidar";
 
 const intervalMs = Number(process.env.HILI_SCAN_INTERVAL_MS ?? 900000);
 const watchEnabled = process.env.HILI_WATCH_MEDIA !== "false";
 const watchers = new Map<string, { rootPath: string; watcher: FSWatcher }>();
 const changedLibraries = new Set<string>();
 let changeTimer: NodeJS.Timeout | null = null;
+let firstChangeAt: number | null = null;
+const DEBOUNCE_MS = 1500;
+const MAX_DEBOUNCE_MS = 10000;
 
 getSqlite();
 
@@ -39,14 +42,18 @@ async function drainQueue() {
 }
 
 function scheduleChangedScans() {
+  if (firstChangeAt === null) firstChangeAt = Date.now();
   if (changeTimer) clearTimeout(changeTimer);
+  const elapsed = Date.now() - firstChangeAt;
+  const delay = Math.min(DEBOUNCE_MS, Math.max(0, MAX_DEBOUNCE_MS - elapsed));
   changeTimer = setTimeout(() => {
     changeTimer = null;
+    firstChangeAt = null;
     if (processing) return;
     for (const libraryId of changedLibraries) enqueueScan(libraryId);
     changedLibraries.clear();
     void drainQueue();
-  }, 1500);
+  }, delay);
 }
 
 function refreshWatchers() {
@@ -56,7 +63,7 @@ function refreshWatchers() {
 
   for (const [id, current] of watchers) {
     if (!activeIds.has(id)) {
-      current.watcher.close();
+      current.watcher.close().catch(() => {});
       watchers.delete(id);
     }
   }
@@ -64,15 +71,20 @@ function refreshWatchers() {
   for (const library of libraries) {
     const current = watchers.get(library.id);
     if (current?.rootPath === library.root_path) continue;
-    current?.watcher.close();
+    current?.watcher.close().catch(() => {});
     try {
-      const watcher = watch(library.root_path, { recursive: true }, () => {
+      const watcher = watch(library.root_path, {
+        ignored: (path) => path.includes("node_modules") || path.includes(".git"),
+        ignoreInitial: true,
+        persistent: false
+      });
+      watcher.on("all", () => {
         changedLibraries.add(library.id);
         scheduleChangedScans();
       });
       watcher.on("error", (error) => {
         console.warn(`[worker] media watcher failed for ${library.root_path}; periodic scans remain active`, error);
-        watcher.close();
+        watcher.close().catch(() => {});
         watchers.delete(library.id);
       });
       watchers.set(library.id, { rootPath: library.root_path, watcher });
@@ -83,8 +95,24 @@ function refreshWatchers() {
 }
 
 enqueueScan();
-await drainQueue();
+void drainQueue();
 refreshWatchers();
-setInterval(() => void drainQueue(), 1000);
+setInterval(() => void drainQueue(), 10000);
 setInterval(() => enqueueScan(), intervalMs);
 setInterval(refreshWatchers, 30000);
+
+let shuttingDown = false;
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[worker] received ${signal}, shutting down...`);
+  for (const current of watchers.values()) {
+    current.watcher.close().catch(() => {});
+  }
+  watchers.clear();
+  // 给当前 drainQueue 一个短超时完成
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  process.exit(0);
+}
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
