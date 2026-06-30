@@ -29,6 +29,19 @@ export function SpeedMenu({ speed, onSpeedChange, open, onOpenChange, buttonRef,
     return () => btn.removeEventListener("wheel", onWheel);
   }, [buttonRef, onWheelChange]);
 
+  // 菜单打开时按 Escape 关闭
+  useEffect(() => {
+    if (!open) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onOpenChange(false);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open, onOpenChange]);
+
   return (
     <div className="relative">
       <button

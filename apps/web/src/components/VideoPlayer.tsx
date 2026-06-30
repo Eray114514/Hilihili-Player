@@ -275,6 +275,24 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current);
   }, []);
 
+  // mount 时聚焦播放器外壳，让键盘快捷键立即可用
+  useEffect(() => {
+    shellRef.current?.focus();
+  }, []);
+
+  // 字幕菜单打开时按 Escape 关闭
+  useEffect(() => {
+    if (!subtitleMenuOpen) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSubtitleMenuOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [subtitleMenuOpen]);
+
   if (!part) {
     return <div className="grid aspect-video place-items-center rounded-xl bg-white/5 text-white/55">没有可播放分P</div>;
   }
@@ -298,6 +316,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     <section
       ref={shellRef}
       tabIndex={0}
+      aria-label="视频播放器"
       className="group relative aspect-video overflow-hidden rounded-xl bg-black shadow-2xl shadow-black/30 outline-none ring-1 ring-white/10"
       onMouseMove={showControls}
       onFocus={showControls}
@@ -406,7 +425,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
 
       {state === "error" ? (
         <div className="pointer-events-none absolute left-1/2 top-1/2 flex w-[min(90%,28rem)] -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-3 rounded-xl bg-black/80 p-5 text-center text-sm text-white/75">
-          <AlertTriangle size={32} className="text-amber-400" />
+          <AlertTriangle size={32} className="text-amber-400" aria-hidden="true" />
           <span>{part.compatibilityStatus === "failed" ? "该视频转换失败，请检查 worker 日志或源文件是否损坏。" : "浏览器无法加载该视频，请重新扫描媒体库后再试。"}</span>
         </div>
       ) : (
@@ -420,7 +439,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
               exit="exit"
               className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
             >
-              <LoaderCircle className="animate-spin text-white/80" size={42} />
+              <LoaderCircle className="animate-spin text-white/80" size={42} aria-hidden="true" />
             </motion.div>
           ) : null}
         </AnimatePresence>

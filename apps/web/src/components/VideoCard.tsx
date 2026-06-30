@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useState } from "react";
 import type { FeedItem } from "@hilihili/shared";
 import { assetUrl } from "@/lib/api";
+import { formatDate } from "@/lib/format";
 import { ApiImage } from "@/components/ApiImage";
 import { VideoPreview } from "@/components/VideoPreview";
 
@@ -90,9 +91,4 @@ function cardBadge(item: FeedItem) {
   if (item.kind === "image") return item.imageCount > 0 ? `${item.imageCount}图` : "图集";
   if (item.kind === "post") return "动态";
   return item.partCount && item.partCount > 1 ? `${item.partCount}P` : null;
-}
-
-function formatDate(value: string) {
-  const date = new Date(value);
-  return Number.isFinite(date.getTime()) ? date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" }) : "";
 }

@@ -4,6 +4,7 @@ import { LoaderCircle, Search, SearchX } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { GridSkeleton } from "@/components/GridSkeleton";
 import { VideoGrid } from "@/components/VideoCard";
 import { apiFetcher, useApi, type SearchResponse } from "@/lib/api";
 
@@ -55,7 +56,7 @@ function SearchResults({ query }: { query: string }) {
       {failed ? (
         <SearchMessage icon={<SearchX size={32} />} title="搜索暂时不可用" body="请确认 API 服务正在运行后重试。" />
       ) : isLoading ? (
-        <ResultSkeleton />
+        <GridSkeleton />
       ) : !query ? (
         <SearchMessage icon={<Search size={32} />} title="从顶部搜索框开始" body="输入几个关键词，Hilihili 会在整个媒体库里替你找。" />
       ) : items.length === 0 ? (
@@ -77,9 +78,5 @@ function SearchMessage({ icon, title, body }: { icon: React.ReactNode; title: st
 }
 
 function SearchPageSkeleton() {
-  return <AppShell><ResultSkeleton /></AppShell>;
-}
-
-function ResultSkeleton() {
-  return <div className="grid skeleton-shimmer grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">{Array.from({ length: 12 }, (_, index) => <div key={index}><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-2 h-4 rounded bg-white/5" /><div className="mt-2 h-3 w-1/2 rounded bg-white/[0.035]" /></div>)}</div>;
+  return <AppShell><GridSkeleton /></AppShell>;
 }

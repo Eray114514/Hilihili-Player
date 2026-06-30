@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import type { ItemImage } from "@/lib/api";
 import { assetUrl } from "@/lib/api";
@@ -10,11 +10,45 @@ import { fadeIn, scaleIn } from "@/lib/motion";
 
 export function ImageLightbox({ images, index, onChange, onClose }: { images: ItemImage[]; index: number; onChange: (index: number) => void; onClose: () => void }) {
   const reduced = useReducedMotion();
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // 打开时把焦点移到关闭按钮，让屏幕阅读器立刻进入对话框
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const closeBtn = container.querySelector<HTMLButtonElement>('button[aria-label="关闭图片预览"]');
+    if (closeBtn) closeBtn.focus();
+    else container.focus();
+  }, []);
+
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
       if (event.key === "Escape") onClose();
       if (event.key === "ArrowLeft") onChange((index - 1 + images.length) % images.length);
       if (event.key === "ArrowRight") onChange((index + 1) % images.length);
+      // focus trap：Tab/Shift+Tab 在对话框内可聚焦元素间循环，避免跑到背景
+      if (event.key === "Tab") {
+        const container = containerRef.current;
+        if (!container) return;
+        const focusables = Array.from(
+          container.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])')
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement;
+        if (event.shiftKey) {
+          if (active === first || !container.contains(active)) {
+            event.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (active === last || !container.contains(active)) {
+            event.preventDefault();
+            first.focus();
+          }
+        }
+      }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
@@ -24,6 +58,8 @@ export function ImageLightbox({ images, index, onChange, onClose }: { images: It
   if (!image) return null;
   return (
     <motion.div
+      ref={containerRef}
+      tabIndex={-1}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/94 p-3 backdrop-blur-md"
       role="dialog"
       aria-modal="true"

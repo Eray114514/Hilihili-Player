@@ -7,6 +7,7 @@ import { useState, type FormEvent } from "react";
 import { ApiImage } from "@/components/ApiImage";
 import { AppShell, EmptyState } from "@/components/AppShell";
 import { assetUrl, deleteJson, postJson, useApi, type FavoriteFolder, type FavoriteFolderItemsResponse } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 import { slideUp } from "@/lib/motion";
 import type { FeedItem } from "@hilihili/shared";
 
@@ -169,7 +170,7 @@ export default function FavoritesPage() {
                             <div className="min-w-0 flex-1">
                               <div className="truncate font-medium">{folder.name}</div>
                               <p className="mt-0.5 text-xs text-white/42">
-                                {folder.itemCount} 个收藏 · {formatDate(folder.createdAt)}
+                                {folder.itemCount} 个收藏 · {formatDateTime(folder.createdAt)}
                               </p>
                             </div>
                           </div>
@@ -231,7 +232,7 @@ function FavoriteCard({
         </p>
         <div className="mt-3 flex items-center gap-x-3 text-xs">
           <span className="text-[var(--accent)]">已收藏</span>
-          <time className="text-white/32">{formatDate(favoritedAt)}</time>
+          <time className="text-white/32">{formatDateTime(favoritedAt)}</time>
         </div>
       </div>
       <div className="flex shrink-0 gap-2 sm:flex-col">
@@ -267,12 +268,4 @@ function FavoritesSkeleton() {
       ))}
     </div>
   );
-}
-
-function formatDate(value: string | null) {
-  if (!value) return "";
-  const date = new Date(value);
-  return Number.isFinite(date.getTime())
-    ? date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
-    : "";
 }

@@ -7,6 +7,7 @@ import { useState } from "react";
 import { AppShell, EmptyState } from "@/components/AppShell";
 import { ApiImage } from "@/components/ApiImage";
 import { CreatorAvatar } from "@/components/CreatorAvatar";
+import { GridSkeleton } from "@/components/GridSkeleton";
 import { VideoGrid } from "@/components/VideoCard";
 import { assetUrl, getJson, putJson, useApi, type CreatorDetail, type CreatorItemsResponse } from "@/lib/api";
 
@@ -81,7 +82,7 @@ export default function CreatorPage() {
               <button disabled={busy !== null || Boolean(creator.blacklisted)} onClick={() => void toggleFollow()} className={`${creator.followed ? "secondary-button" : "primary-button"} disabled:opacity-45`}>
                 {busy === "follow" ? <LoaderCircle className="animate-spin" size={16} /> : creator.followed ? <BellOff size={16} /> : <Bell size={16} />}{creator.followed ? "已特别关注" : "特别关注"}
               </button>
-              <details className="relative"><summary className="icon-button list-none" aria-label="更多 UP 操作"><MoreHorizontal size={19} /></summary><div className="absolute right-0 top-11 z-20 w-44 rounded-xl border border-white/10 bg-[#1a1e26] p-1.5 shadow-2xl"><button disabled={busy !== null} onClick={() => void toggleBlock()} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-white/70 hover:bg-white/8 hover:text-white disabled:opacity-45"><Ban size={16} />{creator.blacklisted ? "取消屏蔽" : "屏蔽该 UP"}</button></div></details>
+              <details className="relative" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.currentTarget.open = false; } }}><summary className="icon-button list-none" aria-label="更多 UP 操作"><MoreHorizontal size={19} /></summary><div className="absolute right-0 top-11 z-20 w-44 rounded-xl border border-white/10 bg-[#1a1e26] p-1.5 shadow-2xl"><button disabled={busy !== null} onClick={() => void toggleBlock()} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-white/70 hover:bg-white/8 hover:text-white disabled:opacity-45"><Ban size={16} />{creator.blacklisted ? "取消屏蔽" : "屏蔽该 UP"}</button></div></details>
             </div>
           </div>
           <p className="mt-5 max-w-3xl whitespace-pre-wrap text-sm leading-7 text-white/65">{creator.description || "这个 UP 还没有留下简介，但每一次投稿都已经收进这座小型放映厅。"}</p>
@@ -109,5 +110,4 @@ function GeneratedBanner({ name }: { name: string }) {
   return <div className="absolute inset-0" style={{ background: `radial-gradient(circle at 18% 12%, hsl(${hue} 70% 56% / .56), transparent 32%), radial-gradient(circle at 85% 18%, hsl(${(hue + 65) % 360} 72% 55% / .38), transparent 36%), linear-gradient(125deg, hsl(${(hue + 220) % 360} 34% 17%), #111820 58%, hsl(${hue} 25% 15%))` }} />;
 }
 
-function CreatorSkeleton() { return <AppShell wide><div className="skeleton-shimmer overflow-hidden rounded-3xl border border-white/8"><div className="h-48 bg-white/5" /><div className="p-7"><div className="h-14 w-14 -mt-20 rounded-full bg-white/10" /><div className="mt-5 h-8 w-52 rounded bg-white/6" /><div className="mt-3 h-4 max-w-xl rounded bg-white/[0.04]" /></div></div><GridSkeleton /></AppShell>; }
-function GridSkeleton() { return <div className="mt-6 grid skeleton-shimmer grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">{Array.from({ length: 10 }, (_, index) => <div key={index}><div className="aspect-video rounded-xl bg-white/5" /><div className="mt-2 h-4 rounded bg-white/5" /></div>)}</div>; }
+function CreatorSkeleton() { return <AppShell wide><div className="skeleton-shimmer overflow-hidden rounded-3xl border border-white/8"><div className="h-48 bg-white/5" /><div className="p-7"><div className="h-14 w-14 -mt-20 rounded-full bg-white/10" /><div className="mt-5 h-8 w-52 rounded bg-white/6" /><div className="mt-3 h-4 max-w-xl rounded bg-white/[0.04]" /></div></div><div className="mt-6"><GridSkeleton /></div></AppShell>; }

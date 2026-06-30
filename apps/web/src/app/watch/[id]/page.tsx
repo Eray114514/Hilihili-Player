@@ -4,7 +4,7 @@ import { Ban, Check, CircleDollarSign, LoaderCircle, MoreHorizontal, Plus, Send,
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import type { KeyedMutator } from "swr";
 import { AppShell } from "@/components/AppShell";
@@ -68,6 +68,19 @@ function WatchContent({ detail, mutateDetail, folders, mutateFolders }: WatchCon
   const [tagDraft, setTagDraft] = useState("");
   const [tagBusy, setTagBusy] = useState<string | null>(null);
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+
+  // 收藏夹面板打开时按 Escape 关闭
+  useEffect(() => {
+    if (!favoritePanelOpen) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setFavoritePanelOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [favoritePanelOpen]);
 
   async function toggleReaction(next: Exclude<Reaction, null>) {
     const value = reaction === next ? null : next;

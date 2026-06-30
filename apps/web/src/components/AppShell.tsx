@@ -28,7 +28,7 @@ export function AppShell({ children, wide = false }: { children: ReactNode; wide
           <nav className="hidden items-center gap-1 md:flex">
             {navItems.filter((item) => item.href !== "/messages").map((item) => {
               const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
-              return <Link key={item.href} href={item.href} className={`nav-link ${active ? "active" : ""}`}>{item.label}</Link>;
+              return <Link key={item.href} href={item.href} className={`nav-link ${active ? "active" : ""}`} aria-current={active ? "page" : undefined}>{item.label}</Link>;
             })}
           </nav>
           <div className="order-3 w-full md:order-none md:ml-auto md:max-w-xl">
@@ -46,7 +46,7 @@ export function AppShell({ children, wide = false }: { children: ReactNode; wide
           const Icon = item.icon;
           const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
           return (
-            <Link key={item.href} href={item.href} className={`relative flex flex-col items-center gap-1 text-[11px] ${active ? "text-[var(--accent)]" : "text-white/45"}`}>
+            <Link key={item.href} href={item.href} className={`relative flex flex-col items-center gap-1 text-[11px] ${active ? "text-[var(--accent)]" : "text-white/45"}`} aria-current={active ? "page" : undefined}>
               {active && (
                 <motion.div
                   layoutId="bottom-nav-indicator"
@@ -54,7 +54,7 @@ export function AppShell({ children, wide = false }: { children: ReactNode; wide
                   className="absolute top-0 left-0 right-0 mx-auto h-1 w-8 rounded-full bg-[var(--accent)]"
                 />
               )}
-              <Icon size={19} />
+              <Icon size={19} aria-hidden="true" />
               {item.label}
             </Link>
           );
@@ -339,7 +339,7 @@ function ProfileMenu() {
             </div>
             {menuItems.map((item) => {
               const Icon = item.icon;
-              return <Link key={item.href} href={item.href} className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-white/68 transition-colors duration-100 hover:bg-white/8 hover:text-white"><Icon size={17} /><span>{item.label}</span><ChevronRight className="ml-auto text-white/25" size={15} /></Link>;
+              return <Link key={item.href} href={item.href} className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-white/68 transition-colors duration-100 hover:bg-white/8 hover:text-white"><Icon size={17} aria-hidden="true" /><span>{item.label}</span><ChevronRight className="ml-auto text-white/25" size={15} aria-hidden="true" /></Link>;
             })}
           </motion.div>
         )}
