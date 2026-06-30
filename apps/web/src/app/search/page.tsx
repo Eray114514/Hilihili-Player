@@ -2,11 +2,10 @@
 
 import { LoaderCircle, Search, SearchX } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useState } from "react";
-import type { FeedItem } from "@hilihili/shared";
+import { Suspense, useCallback, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { VideoGrid } from "@/components/VideoCard";
-import { getJson, type SearchResponse } from "@/lib/api";
+import { apiFetcher, useApi, type SearchResponse } from "@/lib/api";
 
 const PAGE_SIZE = 48;
 
@@ -21,52 +20,41 @@ function SearchRoute() {
 }
 
 function SearchResults({ query }: { query: string }) {
-  const [items, setItems] = useState<FeedItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
-  const [loading, setLoading] = useState(Boolean(query));
   const [loadingMore, setLoadingMore] = useState(false);
-  const [failed, setFailed] = useState(false);
+  // query 为空时 key 为 null，不发请求；query 变化时父组件已用 key={query} remount
+  const key = query ? `/search?q=${encodeURIComponent(query)}&limit=${PAGE_SIZE}` : null;
+  const { data, error, isLoading, mutate } = useApi<SearchResponse>(key);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    if (!query) return () => controller.abort();
-    void getJson<SearchResponse>(`/search?q=${encodeURIComponent(query)}&limit=${PAGE_SIZE}`)
-      .then((response) => {
-        if (!controller.signal.aborted) {
-          setItems(response.items);
-          setTotal(response.total);
-          setHasMore(response.hasMore);
-        }
-      })
-      .catch(() => { if (!controller.signal.aborted) setFailed(true); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [query]);
+  const items = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const hasMore = data?.hasMore ?? false;
+  const failed = Boolean(error);
 
   const loadMore = useCallback(async () => {
-    if (loadingMore || !hasMore) return;
+    if (loadingMore || !hasMore || !query) return;
     setLoadingMore(true);
     try {
-      const response = await getJson<SearchResponse>(`/search?q=${encodeURIComponent(query)}&limit=${PAGE_SIZE}&offset=${items.length}`);
-      setItems((current) => [...current, ...response.items]);
-      setHasMore(response.hasMore);
+      const response = await apiFetcher<SearchResponse>(`/search?q=${encodeURIComponent(query)}&limit=${PAGE_SIZE}&offset=${items.length}`);
+      // 把追加页累积进 SWR 缓存（不触发 revalidate，避免重新请求第一页）
+      mutate((current) => current
+        ? { ...current, items: [...current.items, ...response.items], hasMore: response.hasMore }
+        : current, { revalidate: false });
     } finally {
       setLoadingMore(false);
     }
-  }, [hasMore, items.length, loadingMore, query]);
+  }, [hasMore, items.length, loadingMore, mutate, query]);
 
   return (
     <AppShell>
       <section className="mb-7 border-b border-white/8 pb-6">
         <div className="flex items-center gap-2 text-sm text-[var(--accent)]"><Search size={16} />媒体库搜索</div>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight md:text-3xl">{query ? `“${query}”` : "搜索你想看的内容"}</h1>
-        <p className="mt-2 text-sm text-white/45">{query ? loading ? "正在翻找整个媒体库…" : `找到 ${total} 个相关内容` : "可以搜索标题、UP 主、分区、标签或分 P 名称。"}</p>
+        <p className="mt-2 text-sm text-white/45">{query ? isLoading ? "正在翻找整个媒体库…" : `找到 ${total} 个相关内容` : "可以搜索标题、UP 主、分区、标签或分 P 名称。"}</p>
       </section>
 
       {failed ? (
         <SearchMessage icon={<SearchX size={32} />} title="搜索暂时不可用" body="请确认 API 服务正在运行后重试。" />
-      ) : loading ? (
+      ) : isLoading ? (
         <ResultSkeleton />
       ) : !query ? (
         <SearchMessage icon={<Search size={32} />} title="从顶部搜索框开始" body="输入几个关键词，Hilihili 会在整个媒体库里替你找。" />

@@ -3,44 +3,26 @@
 import { ArrowLeft, Bookmark, BookmarkPlus, Clock3, Folder, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { ApiImage } from "@/components/ApiImage";
 import { AppShell, EmptyState } from "@/components/AppShell";
-import { assetUrl, deleteJson, getJson, postJson, type FavoriteFolder } from "@/lib/api";
+import { assetUrl, deleteJson, postJson, useApi, type FavoriteFolder, type FavoriteFolderItemsResponse } from "@/lib/api";
 import { slideUp } from "@/lib/motion";
 import type { FeedItem } from "@hilihili/shared";
 
 export default function FavoritesPage() {
-  const [folders, setFolders] = useState<FavoriteFolder[]>([]);
   const [activeFolder, setActiveFolder] = useState<FavoriteFolder | null>(null);
-  const [items, setItems] = useState<{ item: FeedItem; favoritedAt: string; folderId: string }[]>([]);
   const [newFolderName, setNewFolderName] = useState("");
-  const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  useEffect(() => {
-    let ignore = false;
-    void getJson<{ folders: FavoriteFolder[] }>("/me/favorites")
-      .then((response) => {
-        if (ignore) return;
-        setFolders(response.folders);
-      })
-      .finally(() => {
-        if (!ignore) setLoading(false);
-      });
-    return () => { ignore = true; };
-  }, []);
+  const { data: foldersData, isLoading: foldersLoading, mutate: mutateFolders } = useApi<{ folders: FavoriteFolder[] }>("/me/favorites");
+  // activeFolder 为 null 时 path 为 null，不发请求（条件请求）
+  const { data: itemsData, mutate: mutateItems } = useApi<FavoriteFolderItemsResponse>(
+    activeFolder ? `/me/favorites/folders/${activeFolder.id}/items` : null
+  );
 
-  useEffect(() => {
-    if (!activeFolder) return;
-    let ignore = false;
-    void getJson<{ items: { item: FeedItem; favoritedAt: string; folderId: string }[] }>(
-      `/me/favorites/folders/${activeFolder.id}/items`
-    ).then((response) => {
-      if (!ignore) setItems(response.items);
-    });
-    return () => { ignore = true; };
-  }, [activeFolder]);
+  const folders = foldersData?.folders ?? [];
+  const items = itemsData?.items ?? [];
 
   async function createFolder(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -50,10 +32,9 @@ export default function FavoritesPage() {
       "/me/favorites/folders",
       { name }
     );
-    setFolders((current) => [
-      ...current,
-      { id: response.id, name: response.name, itemCount: 0, createdAt: response.createdAt }
-    ]);
+    const newFolder: FavoriteFolder = { id: response.id, name: response.name, itemCount: 0, createdAt: response.createdAt };
+    // 乐观追加，不触发 revalidate
+    mutateFolders((current) => current ? { folders: [...current.folders, newFolder] } : current, { revalidate: false });
     setNewFolderName("");
   }
 
@@ -62,29 +43,27 @@ export default function FavoritesPage() {
     try {
       await deleteJson(`/me/favorites/folders/${folder.id}`);
     } catch (error) {
-      // 404 表示收藏夹已不存在，UI 同步移除即可
+      // 404 表示收藏夹已不存在，乐观更新已移除，这里只记日志
       console.error("[favorites] 删除收藏夹失败", error);
     }
-    setFolders((current) => current.filter((folderItem) => folderItem.id !== folder.id));
+    mutateFolders((current) => current ? { folders: current.folders.filter((folderItem) => folderItem.id !== folder.id) } : current, { revalidate: false });
     if (activeFolder?.id === folder.id) setActiveFolder(null);
   }
 
   async function removeItem(itemId: string) {
     if (!activeFolder) return;
+    const folderId = activeFolder.id;
     setBusyId(itemId);
     try {
       try {
-        await deleteJson(`/items/${itemId}/favorites?folderId=${activeFolder.id}`);
+        await deleteJson(`/items/${itemId}/favorites?folderId=${folderId}`);
       } catch (error) {
-        // 404 表示收藏已不存在，UI 同步移除即可
+        // 404 表示收藏已不存在，乐观更新已移除，这里只记日志
         console.error("[favorites] 移除收藏失败", error);
       }
-      setItems((current) => current.filter((entry) => entry.item.id !== itemId));
-      setFolders((current) =>
-        current.map((folder) =>
-          folder.id === activeFolder.id ? { ...folder, itemCount: Math.max(0, folder.itemCount - 1) } : folder
-        )
-      );
+      // 两步乐观更新：先从当前夹移除条目，再同步夹的 itemCount
+      mutateItems((current) => current ? { items: current.items.filter((entry) => entry.item.id !== itemId) } : current, { revalidate: false });
+      mutateFolders((current) => current ? { folders: current.folders.map((folder) => folder.id === folderId ? { ...folder, itemCount: Math.max(0, folder.itemCount - 1) } : folder) } : current, { revalidate: false });
     } finally {
       setBusyId(null);
     }
@@ -160,7 +139,7 @@ export default function FavoritesPage() {
             </button>
           </form>
 
-          {loading ? (
+          {foldersLoading ? (
             <FavoritesSkeleton />
           ) : (
             <div className="animate-fade-in">

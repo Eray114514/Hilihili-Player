@@ -2,11 +2,11 @@
 
 import { Clock3, Heart, LoaderCircle, Play, RefreshCw } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FeedItem } from "@hilihili/shared";
 import { AppShell, EmptyState } from "@/components/AppShell";
 import { VideoGrid } from "@/components/VideoCard";
-import { getJson, type ActivityResponse, type Category, type FeedResponse } from "@/lib/api";
+import { apiFetcher, useApi, type ActivityResponse, type Category, type FeedResponse } from "@/lib/api";
 
 const FEATURED_LIMIT = 24;
 const STREAM_BATCH_SIZE = 24;
@@ -14,43 +14,31 @@ const STREAM_BATCH_SIZE = 24;
 export default function HomePage() {
   const [seed, setSeed] = useState("home");
   const [streamSeed, setStreamSeed] = useState(() => `stream-${Date.now()}`);
-  const [featuredItems, setFeaturedItems] = useState<FeedItem[]>([]);
   const [streamItems, setStreamItems] = useState<FeedItem[]>([]);
   const [streamOffset, setStreamOffset] = useState(0);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [activity, setActivity] = useState<ActivityResponse | null>(null);
-  const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const loadMoreMarker = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    void Promise.all([
-      getJson<{ categories: Category[] }>("/categories"),
-      getJson<ActivityResponse>("/me/activity?limit=12")
-    ]).then(([categoryData, activityData]) => {
-      if (!controller.signal.aborted) {
-        setCategories(categoryData.categories);
-        setActivity(activityData);
-      }
-    });
-    return () => controller.abort();
-  }, []);
+  // 分类与活动数据：focus 时自动 revalidate（用户从别的页返回时分类列表是最新的）
+  const { data: categoryData } = useApi<{ categories: Category[] }>("/categories");
+  const { data: activity } = useApi<ActivityResponse>("/me/activity?limit=12");
+  // featured feed：key 随 seed 变化自动 refetch
+  const { data: featuredData, isLoading: featuredLoading } = useApi<FeedResponse>(
+    `/feeds/home?seed=${encodeURIComponent(seed)}&limit=${FEATURED_LIMIT}`
+  );
 
-  useEffect(() => {
-    const controller = new AbortController();
-    void getJson<FeedResponse>(`/feeds/home?seed=${encodeURIComponent(seed)}&limit=${FEATURED_LIMIT}`)
-      .then((feed) => { if (!controller.signal.aborted) setFeaturedItems(feed.items); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [seed]);
+  const categories = categoryData?.categories ?? [];
+  // useMemo 稳定引用，避免 featuredData 未就绪时每次渲染产生新 [] 触发 loadMore 重建
+  const featuredItems = useMemo(() => featuredData?.items ?? [], [featuredData]);
 
+  // streaming 保留自定义逻辑（客户端去重 + IntersectionObserver + offset 累积）。
+  // stream 用不同 seed/mode 且与 featured 跨批去重，不适合 useSWRInfinite。
   const loadMore = useCallback(async () => {
-    if (loading || loadingMore || !hasMore) return;
+    if (featuredLoading || loadingMore || !hasMore) return;
     setLoadingMore(true);
     try {
-      const feed = await getJson<FeedResponse>(`/feeds/home?mode=shuffle&seed=${encodeURIComponent(streamSeed)}&limit=${STREAM_BATCH_SIZE}&offset=${streamOffset}`);
+      const feed = await apiFetcher<FeedResponse>(`/feeds/home?mode=shuffle&seed=${encodeURIComponent(streamSeed)}&limit=${STREAM_BATCH_SIZE}&offset=${streamOffset}`);
       const existingIds = new Set([...featuredItems, ...streamItems].map((item) => item.id));
       const freshItems = feed.items.filter((item) => !existingIds.has(item.id));
       setStreamItems((current) => [...current, ...freshItems]);
@@ -59,7 +47,7 @@ export default function HomePage() {
     } finally {
       setLoadingMore(false);
     }
-  }, [featuredItems, hasMore, loading, loadingMore, streamItems, streamOffset, streamSeed]);
+  }, [featuredItems, featuredLoading, hasMore, loadingMore, streamItems, streamOffset, streamSeed]);
 
   useEffect(() => {
     const marker = loadMoreMarker.current;
@@ -73,7 +61,7 @@ export default function HomePage() {
 
   const refreshFeatured = () => {
     const nextSeed = String(Date.now());
-    setLoading(true);
+    // featured 由 key 变化自动 refetch；stream 状态手动重置
     setSeed(nextSeed);
     setStreamSeed(`stream-${nextSeed}`);
     setStreamItems([]);
@@ -104,8 +92,8 @@ export default function HomePage() {
           <h1 className="text-xl font-semibold tracking-tight md:text-2xl">推荐</h1>
           {continueReminder ? <p className="mt-1 truncate text-sm text-white/42">上次看到 {continueReminder.progressPercent}%</p> : null}
         </div>
-        <button className="secondary-button shrink-0" onClick={refreshFeatured} disabled={loading}>
-          <RefreshCw size={17} className={loading ? "animate-spin" : ""} /> 换一换
+        <button className="secondary-button shrink-0" onClick={refreshFeatured} disabled={featuredLoading}>
+          <RefreshCw size={17} className={featuredLoading ? "animate-spin" : ""} /> 换一换
         </button>
       </section>
 
@@ -133,7 +121,7 @@ export default function HomePage() {
         </section>
       ) : null}
 
-      {loading ? <HomeSkeleton /> : (
+      {featuredLoading ? <HomeSkeleton /> : (
         <div className="animate-fade-in">
           {allItems.length === 0 ? (
             <EmptyState title="还没有视频" body="去设置里添加一个本机或 NAS 挂载目录，然后扫描媒体库。" />
