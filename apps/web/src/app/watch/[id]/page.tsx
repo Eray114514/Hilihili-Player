@@ -95,7 +95,7 @@ function WatchContent({ detail, mutateDetail, folders, mutateFolders }: WatchCon
   }
 
   async function toggleBlacklist() {
-    const creatorId = detail.item.creator_id;
+    const creatorId = detail.item.creatorId;
     if (!creatorId) return;
     const next = !blacklisted;
     setBlacklisted(next);
@@ -206,7 +206,7 @@ function WatchContent({ detail, mutateDetail, folders, mutateFolders }: WatchCon
 
   const activePart = detail.parts[activePartIndex];
   const tagDetails = detail.tagDetails ?? [];
-  const description = detail.item.post_body ?? detail.item.description ?? null;
+  const description = detail.item.postBody ?? detail.item.description ?? null;
 
   return (
     <motion.div variants={fadeIn} initial="hidden" animate="visible" className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -224,8 +224,8 @@ function WatchContent({ detail, mutateDetail, folders, mutateFolders }: WatchCon
 
         <section className="border-b border-white/8 py-4">
           <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
-            <div className="min-w-0"><h1 className="text-xl font-semibold leading-8 md:text-2xl">{detail.item.title}</h1><div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-white/42"><Link href={detail.item.category_id ? `/category/${detail.item.category_id}` : "#"} className="hover:text-[var(--accent)]">{detail.item.categoryName}</Link><span>·</span><time>{formatDate(detail.item.content_published_at ?? detail.item.file_modified_at ?? detail.item.first_seen_at)}</time>{detail.parts.length > 1 ? <><span>·</span><span>{detail.parts.length} P</span></> : null}</div></div>
-            <Link href={detail.item.creator_id ? `/creator/${detail.item.creator_id}` : "#"} className="flex shrink-0 items-center gap-2.5 rounded-lg p-1.5 pr-2.5 transition hover:bg-white/[0.055]"><CreatorAvatar creatorId={null} name={detail.item.creatorName} avatarUrl={detail.item.creatorAvatarUrl} size="sm" /><span className="min-w-0"><span className="block max-w-44 truncate text-sm font-semibold text-white/88">{detail.item.creatorName}</span>{detail.item.creatorAlias ? <span className="block max-w-44 truncate text-xs text-white/42">{detail.item.creatorAlias}</span> : <span className="block text-xs text-white/38">UP 主</span>}</span></Link>
+            <div className="min-w-0"><h1 className="text-xl font-semibold leading-8 md:text-2xl">{detail.item.title}</h1><div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-white/42"><Link href={detail.item.categoryId ? `/category/${detail.item.categoryId}` : "#"} className="hover:text-[var(--accent)]">{detail.item.categoryName}</Link><span>·</span><time>{formatDate(detail.item.contentPublishedAt ?? detail.item.fileModifiedAt ?? detail.item.firstSeenAt)}</time>{detail.parts.length > 1 ? <><span>·</span><span>{detail.parts.length} P</span></> : null}</div></div>
+            <Link href={detail.item.creatorId ? `/creator/${detail.item.creatorId}` : "#"} className="flex shrink-0 items-center gap-2.5 rounded-lg p-1.5 pr-2.5 transition hover:bg-white/[0.055]"><CreatorAvatar creatorId={null} name={detail.item.creatorName} avatarUrl={detail.item.creatorAvatarUrl} size="sm" /><span className="min-w-0"><span className="block max-w-44 truncate text-sm font-semibold text-white/88">{detail.item.creatorName}</span>{detail.item.creatorAlias ? <span className="block max-w-44 truncate text-xs text-white/42">{detail.item.creatorAlias}</span> : <span className="block text-xs text-white/38">UP 主</span>}</span></Link>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <button className={`action-button bili-action ${reaction === "like" ? "active" : ""}`} onClick={() => void toggleReaction("like")}><motion.span className="inline-flex" variants={pop} initial={false} animate={reaction === "like" ? "pop" : "rest"}><ThumbsUp size={19} fill={reaction === "like" ? "currentColor" : "none"} /></motion.span> 喜欢</button>

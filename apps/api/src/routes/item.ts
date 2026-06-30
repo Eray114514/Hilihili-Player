@@ -17,32 +17,32 @@ import {
 
 export async function itemRoutes(app: ZodFastifyInstance) {
   app.get<{ Params: { id: string } }>("/items/:id", async (request, reply) => {
-    // 保留原 mi.* 的 snake_case wire format（web 的 ItemDetail 类型按 snake_case 读取 post_body/creator_id 等）
-    // 用 Drizzle 链式 + 显式别名让类型从 schema 推导，同时不改变 JSON 字段名
+    // wire format 统一用 camelCase（web 的 ItemDetail 类型按 camelCase 读取 postBody/creatorId 等）
+    // 用 Drizzle 链式 + 显式别名让类型从 schema 推导，JSON 字段名与 TS 属性名一致
     const item = db.select({
       id: mediaItems.id,
       kind: mediaItems.kind,
       title: mediaItems.title,
-      post_body: mediaItems.postBody,
+      postBody: mediaItems.postBody,
       description: mediaItems.description,
-      library_id: mediaItems.libraryId,
-      category_id: mediaItems.categoryId,
-      creator_id: mediaItems.creatorId,
-      source_path: mediaItems.sourcePath,
-      relative_path: mediaItems.relativePath,
-      folder_path: mediaItems.folderPath,
+      libraryId: mediaItems.libraryId,
+      categoryId: mediaItems.categoryId,
+      creatorId: mediaItems.creatorId,
+      sourcePath: mediaItems.sourcePath,
+      relativePath: mediaItems.relativePath,
+      folderPath: mediaItems.folderPath,
       fingerprint: mediaItems.fingerprint,
-      cover_path: mediaItems.coverPath,
-      generated_cover_path: mediaItems.generatedCoverPath,
-      thumbnail_status: mediaItems.thumbnailStatus,
-      thumbnail_error: mediaItems.thumbnailError,
-      content_published_at: mediaItems.contentPublishedAt,
-      file_modified_at: mediaItems.fileModifiedAt,
+      coverPath: mediaItems.coverPath,
+      generatedCoverPath: mediaItems.generatedCoverPath,
+      thumbnailStatus: mediaItems.thumbnailStatus,
+      thumbnailError: mediaItems.thumbnailError,
+      contentPublishedAt: mediaItems.contentPublishedAt,
+      fileModifiedAt: mediaItems.fileModifiedAt,
       hidden: mediaItems.hidden,
-      structure_status: mediaItems.structureStatus,
-      first_seen_at: mediaItems.firstSeenAt,
-      last_scanned_at: mediaItems.lastScannedAt,
-      updated_at: mediaItems.updatedAt,
+      structureStatus: mediaItems.structureStatus,
+      firstSeenAt: mediaItems.firstSeenAt,
+      lastScannedAt: mediaItems.lastScannedAt,
+      updatedAt: mediaItems.updatedAt,
       categoryName: categories.name,
       creatorName: creators.name,
       creatorAlias: creators.alias,
@@ -228,8 +228,8 @@ export async function itemRoutes(app: ZodFastifyInstance) {
     } else {
       const item = db.select({
         id: mediaItems.id,
-        creator_id: mediaItems.creatorId,
-        category_id: mediaItems.categoryId
+        creatorId: mediaItems.creatorId,
+        categoryId: mediaItems.categoryId
       })
         .from(mediaItems)
         .where(eq(mediaItems.id, request.params.id))
@@ -258,8 +258,8 @@ export async function itemRoutes(app: ZodFastifyInstance) {
     const timestamp = nowIso();
     const item = db.select({
       id: mediaItems.id,
-      creator_id: mediaItems.creatorId,
-      category_id: mediaItems.categoryId
+      creatorId: mediaItems.creatorId,
+      categoryId: mediaItems.categoryId
     })
       .from(mediaItems)
       .where(eq(mediaItems.id, itemId))
@@ -294,8 +294,8 @@ export async function itemRoutes(app: ZodFastifyInstance) {
     const body = request.body;
     const item = db.select({
       id: mediaItems.id,
-      creator_id: mediaItems.creatorId,
-      category_id: mediaItems.categoryId
+      creatorId: mediaItems.creatorId,
+      categoryId: mediaItems.categoryId
     })
       .from(mediaItems)
       .where(eq(mediaItems.id, request.params.id))
@@ -361,11 +361,11 @@ export async function itemRoutes(app: ZodFastifyInstance) {
           .run();
       }
 
-      if (kind === "blacklist_up" && item.creator_id) {
+      if (kind === "blacklist_up" && item.creatorId) {
         tx.insert(interactions).values({
           id: createId("int"),
           targetType: "creator",
-          targetId: item.creator_id,
+          targetId: item.creatorId,
           kind: "blacklist_up",
           value,
           createdAt: timestamp
@@ -379,21 +379,21 @@ export async function itemRoutes(app: ZodFastifyInstance) {
           value,
           createdAt: timestamp
         }).run();
-        if ((kind === "like" || kind === "dislike") && item.creator_id) {
+        if ((kind === "like" || kind === "dislike") && item.creatorId) {
           tx.insert(interactions).values({
             id: createId("int"),
             targetType: "creator",
-            targetId: item.creator_id,
+            targetId: item.creatorId,
             kind,
             value,
             createdAt: timestamp
           }).run();
         }
-        if ((kind === "like" || kind === "dislike") && item.category_id) {
+        if ((kind === "like" || kind === "dislike") && item.categoryId) {
           tx.insert(interactions).values({
             id: createId("int"),
             targetType: "category",
-            targetId: item.category_id,
+            targetId: item.categoryId,
             kind,
             value,
             createdAt: timestamp
@@ -427,8 +427,8 @@ export async function itemRoutes(app: ZodFastifyInstance) {
     const itemId = request.params.id;
     const item = db.select({
       id: mediaItems.id,
-      creator_id: mediaItems.creatorId,
-      category_id: mediaItems.categoryId
+      creatorId: mediaItems.creatorId,
+      categoryId: mediaItems.categoryId
     })
       .from(mediaItems)
       .where(eq(mediaItems.id, itemId))

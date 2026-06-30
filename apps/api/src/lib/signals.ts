@@ -3,7 +3,7 @@ import type { InteractionKind } from "@hilihili/shared";
 import { eq, sql } from "drizzle-orm";
 import { db } from "./db.js";
 
-export type ItemRef = { id: string; creator_id: string | null; category_id: string | null };
+export type ItemRef = { id: string; creatorId: string | null; categoryId: string | null };
 
 // Drizzle 的 better-sqlite3 driver 内部仍复用 prepared statement 缓存，
 // 直接 insert 与显式 prepare 性能等价；代码更简洁，故用方案 B。
@@ -19,21 +19,21 @@ export function recordRecommendationSignals(item: ItemRef, kind: InteractionKind
       value,
       createdAt: timestamp
     }).run();
-    if (signalTargets && item.creator_id) {
+    if (signalTargets && item.creatorId) {
       tx.insert(interactions).values({
         id: createId("int"),
         targetType: "creator",
-        targetId: item.creator_id,
+        targetId: item.creatorId,
         kind,
         value,
         createdAt: timestamp
       }).run();
     }
-    if (signalTargets && item.category_id) {
+    if (signalTargets && item.categoryId) {
       tx.insert(interactions).values({
         id: createId("int"),
         targetType: "category",
-        targetId: item.category_id,
+        targetId: item.categoryId,
         kind,
         value,
         createdAt: timestamp
