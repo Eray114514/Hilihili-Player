@@ -67,6 +67,15 @@ type InfoJson = {
 
 const SUBTITLE_EXTS = [".srt", ".vtt"];
 
+// 缩略图/转码并发：留一个核给主线程事件循环，ffmpeg/sharp 自身多线程利用其他核
+const THUMBNAIL_CONCURRENCY = Math.max(1, os.cpus().length - 1);
+// 图片缩略图边长（sharp resize inside，不放大）
+const IMAGE_THUMB_SIZE = 720;
+// 预览雪碧图最小视频时长（秒）；短于该值不生成 sprite
+const SPRITE_MIN_DURATION_SECONDS = 3;
+// runProcess 默认超时：ffmpeg/ffprobe 正常秒级返回，转码长视频也应在 5 分钟内完成
+const DEFAULT_PROCESS_TIMEOUT_MS = 300_000;
+
 type SubtitleCandidate = {
   path: string;
   language: string;
@@ -1411,15 +1420,23 @@ function makeDate(year: number, month: number, day: number) {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? date.toISOString() : null;
 }
 
+type Limiter = ReturnType<typeof pLimit>;
+
 async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libraryIds: string[]) {
   if (libraryIds.length === 0) {
     return;
   }
+  // 三个生成阶段都是 IO/CPU 密集（ffmpeg 子进程 + sharp），共享一个 p-limit 限流器
+  // 控制并发为 CPU 核数 - 1，留一个核给主线程事件循环。
+  const limiter = pLimit(THUMBNAIL_CONCURRENCY);
+  await generateMissingCovers(db, runId, libraryIds, limiter);
+  await preparePartCompatibility(db, libraryIds, limiter);
+  await generateMissingImageThumbnails(db, libraryIds, limiter);
+}
+
+// 阶段 1：为缺少封面的 video/post item 生成封面缩略图（取首个分P）
+async function generateMissingCovers(db: SqliteDatabase, runId: string, libraryIds: string[], limiter: Limiter) {
   const placeholders = libraryIds.map(() => "?").join(",");
-  // 三个生成阶段都是 IO/CPU 密集（ffmpeg 子进程 + sharp），原版串行 for...of
-  // 让单核 worker 一次只处理一个文件。用 p-limit 限制并发为 CPU 核数 - 1，
-  // 留一个核给主线程事件循环；ffmpeg/sharp 自身多线程已利用其他核。
-  const limiter = pLimit(Math.max(1, os.cpus().length - 1));
   // 用 MIN(part_index) 取首个分P，而非硬编码 part_index = 1。
   // upsertPartWithSubtitles 按 path 全局复用分P，clearParts 按 item_id 删除，
   // 在目录重组/分P跨 item 复用/扫描中断等场景下，item 的最小 part_index 可能不是 1。
@@ -1458,7 +1475,11 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
     }
     db.prepare("UPDATE scan_runs SET thumbnails_ready = ?, thumbnails_failed = ? WHERE id = ?").run(ready, failed, runId);
   })));
+}
 
+// 阶段 2：为 video/post 的分P 准备浏览器兼容流（remux/transcode）+ 预览雪碧图
+async function preparePartCompatibility(db: SqliteDatabase, libraryIds: string[], limiter: Limiter) {
+  const placeholders = libraryIds.map(() => "?").join(",");
   const allParts = db.prepare(`
     SELECT mp.id, mp.path, mp.fingerprint, mp.duration_seconds, mp.preview_sprite_path, mp.stream_path,
            mp.compatibility_status, mp.compatibility_attempts, mp.last_compatibility_attempt_at
@@ -1543,7 +1564,7 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
 
     try {
       const spriteExists = part.preview_sprite_path && existsSync(part.preview_sprite_path);
-      if (!spriteExists && duration > 3) {
+      if (!spriteExists && duration > SPRITE_MIN_DURATION_SECONDS) {
         const sprite = await generatePreviewSprite(part.path, part.fingerprint, duration);
         db.prepare(`
           UPDATE media_parts SET preview_sprite_path = ?, preview_sprite_cols = ?, preview_sprite_rows = ?,
@@ -1555,7 +1576,11 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
       log.warn("preview sprite failed", { path: part.path, error: error instanceof Error ? error.message : String(error) });
     }
   })));
+}
 
+// 阶段 3：为 media_images 生成缩略图 + 提取动画元数据
+async function generateMissingImageThumbnails(db: SqliteDatabase, libraryIds: string[], limiter: Limiter) {
+  const placeholders = libraryIds.map(() => "?").join(",");
   const imageRows = db.prepare(`
     SELECT mimg.id, mimg.path, mimg.fingerprint, mimg.thumbnail_path, mimg.is_animated
     FROM media_images mimg
@@ -1595,7 +1620,7 @@ async function generateImageThumbnail(imagePath: string, fingerprint: string, is
   mkdirSync(cacheDir, { recursive: true });
   const outputPath = join(cacheDir, `${fingerprint}.image.webp`);
   if (!existsSync(outputPath)) {
-    const pipe = sharp(imagePath, { animated: isAnimated }).rotate().resize({ width: 720, height: 720, fit: "inside", withoutEnlargement: true });
+    const pipe = sharp(imagePath, { animated: isAnimated }).rotate().resize({ width: IMAGE_THUMB_SIZE, height: IMAGE_THUMB_SIZE, fit: "inside", withoutEnlargement: true });
     if (isAnimated) {
       await pipe.webp({ quality: 80, effort: 4 }).toFile(outputPath);
     } else {
@@ -1848,7 +1873,7 @@ function getFfprobePath() {
   return (require("ffprobe-static") as { path?: string }).path ?? "ffprobe";
 }
 
-function runProcess(command: string, args: string[], timeoutMs = 300000) {
+function runProcess(command: string, args: string[], timeoutMs = DEFAULT_PROCESS_TIMEOUT_MS) {
   return new Promise<string>((resolvePromise, reject) => {
     const child = spawn(command, args, { windowsHide: true });
     let stdout = "";
