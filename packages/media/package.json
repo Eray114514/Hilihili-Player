@@ -10,7 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "tsx --test src/index.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint src --ext .ts"
+    "lint": "eslint src"
   },
   "dependencies": {
     "@hilihili/db": "file:../db",

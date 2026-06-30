@@ -63,11 +63,9 @@ await app.register(cors, {
 
 const db = getSqlite();
 
-app.get("/health", async () => ({
-  ok: true,
-  name: "Hilihili API",
-  now: nowIso()
-}));
+app.get("/api/health", async () => {
+  return { status: "ok" };
+});
 
 app.get("/fs/roots", async () => ({
   roots: getBrowsableRoots()

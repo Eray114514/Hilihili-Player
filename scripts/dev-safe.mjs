@@ -11,8 +11,8 @@ const env = {
   HILI_ALLOWED_MEDIA_ROOT: libraryRoot,
   HILI_API_HOST: "127.0.0.1",
   HILI_API_PORT: "4241",
-  HILI_FFMPEG_PATH: "/usr/bin/ffmpeg",
-  HILI_FFPROBE_PATH: "/usr/bin/ffprobe",
+  HILI_FFMPEG_PATH: process.env.HILI_FFMPEG_PATH || undefined,
+  HILI_FFPROBE_PATH: process.env.HILI_FFPROBE_PATH || undefined,
   NEXT_PUBLIC_API_BASE_URL: "http://localhost:4241",
   PORT: "3100"
 };
@@ -36,4 +36,6 @@ if (seedExit !== 0) {
 
 console.log("Safe demo: http://localhost:3100 (isolated from your real library)");
 const services = run(["--parallel", "--filter", "@hilihili/web", "--filter", "@hilihili/api", "--filter", "@hilihili/worker", "dev"]);
+process.on("SIGINT", () => { services.kill("SIGTERM"); });
+process.on("SIGTERM", () => { services.kill("SIGTERM"); });
 services.on("exit", (code) => process.exit(code ?? 0));

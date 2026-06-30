@@ -3,14 +3,16 @@ services:
     image: ghcr.io/eray114514/hilihili-player:backend
     command: node --import tsx node_modules/@hilihili/api/src/index.ts
     environment:
-      HILI_API_HOST: 0.0.0.0
-      HILI_API_PORT: 4141
+      HILI_API_HOST: ${HILI_API_HOST:-0.0.0.0}
+      HILI_API_PORT: ${HILI_API_PORT:-4141}
       HILI_DATA_DIR: /data
     ports:
       - "4141:4141"
     volumes:
       - hilihili-data:/data
-      - /volume1/@home/Eray:/volume1/Eray
+      - ${HILI_MEDIA_ROOT:-/media}:/media
+    networks:
+      - backend
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
     restart: unless-stopped
@@ -20,11 +22,13 @@ services:
     command: node --import tsx node_modules/@hilihili/worker/src/index.ts
     environment:
       HILI_DATA_DIR: /data
-      HILI_SCAN_INTERVAL_MS: 900000
-      HILI_WATCH_MEDIA: "true"
+      HILI_SCAN_INTERVAL_MS: ${HILI_SCAN_INTERVAL_MS:-900000}
+      HILI_WATCH_MEDIA: ${HILI_WATCH_MEDIA:-true}
     volumes:
       - hilihili-data:/data
-      - /volume1/@home/Eray:/volume1/Eray
+      - ${HILI_MEDIA_ROOT:-/media}:/media
+    networks:
+      - backend
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
     restart: unless-stopped
@@ -32,11 +36,14 @@ services:
   web:
     image: ghcr.io/eray114514/hilihili-player:web
     environment:
-      API_BASE_URL: http://api:4141
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://api:4141}
     ports:
       - "3001:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    networks:
+      - backend
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
     restart: unless-stopped
@@ -47,12 +54,20 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      WATCHTOWER_POLL_INTERVAL: 60
+      WATCHTOWER_SCHEDULE: "0 0 4 * * *"
       WATCHTOWER_LABEL_ENABLE: "true"
       WATCHTOWER_CLEANUP: "true"
       WATCHTOWER_INCLUDE_STOPPED: "false"
       TZ: Asia/Shanghai
+    networks:
+      - watchtower-net
     restart: unless-stopped
 
 volumes:
   hilihili-data:
+
+networks:
+  backend:
+    driver: bridge
+  watchtower-net:
+    driver: bridge

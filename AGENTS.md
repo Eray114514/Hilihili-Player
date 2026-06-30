@@ -79,21 +79,21 @@ CI 会再跑一遍 `lint -> typecheck -> test -> build` 作为双保险。其中
 Copy `.env.example` to `.env`. Key vars:
 
 - `HILI_DATA_DIR` — SQLite DB location (default `./app-data`)
-- `HILI_MEDIA_ROOT` — media root for Docker (mounts to `/media`)
+- `HILI_MEDIA_ROOT` — 宿主机媒体根目录，挂载到容器的 /media（Docker 部署用）
 - `HILI_SCAN_INTERVAL_MS` — worker scan interval (default 900000ms)
 - `HILI_FFMPEG_PATH` / `HILI_FFPROBE_PATH` — override ffmpeg paths
 - `NEXT_PUBLIC_API_BASE_URL` — API URL for the web app
 
 ## Architecture notes
 
-- **No test framework** is set up. No test files exist.
+- **Test framework**: uses Node.js built-in `node:test`. Tests in `packages/media/src/index.test.ts`. Run with `corepack pnpm test`.
 - **DB migrations are inline** in `packages/db/src/index.ts` via `ensureColumn()` — not Drizzle Kit migration files. Schema source of truth is `packages/db/src/schema.ts`.
 - **API is a single file**: `apps/api/src/index.ts` — all routes defined inline, no router abstraction.
 - **Worker entry**: `apps/worker/src/index.ts` — drains scan queue on interval.
 - **Web uses App Router** (`apps/web/src/app/`), with components in `apps/web/src/components/` and utilities in `apps/web/src/lib/`.
 - **Package exports** use raw TS source (`"./src/index.ts"`) — no build step required for internal consumption. `@hilihili/web` uses `transpilePackages` for `@hilihili/shared`.
 - **TypeScript config**: ES2022 target, NodeNext module resolution, strict mode. Base config at `tsconfig.base.json`.
-- **ESLint**: `apps/web` uses `eslint-config-next`; other packages use bare `eslint` with `--ext .ts`.
+- **ESLint**: `apps/web` uses `eslint-config-next`; other packages use bare `eslint`.
 - **No Prettier** configured.
 - **IDs** are prefixed strings: `lib_xxx`, `int_xxx`, `comment_xxx`, etc. (see `createId()` in `@hilihili/db`).
 
