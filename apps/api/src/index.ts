@@ -25,7 +25,8 @@ app.setErrorHandler((error, _request, reply) => {
   const err = error as { statusCode?: number; message?: string };
   const statusCode = err.statusCode ?? 500;
   if (statusCode >= 500) {
-    console.error("[api] unhandled error:", error);
+    // 走 Fastify 内置 pino，与请求日志格式统一（pino 序列化 Error 含 stack）
+    app.log.error(error);
   }
   reply.code(statusCode).send({
     error: statusCode === 500 ? "Internal Server Error" : err.message ?? "Error",

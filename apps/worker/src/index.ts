@@ -1,6 +1,9 @@
 import { getSqlite } from "@hilihili/db";
 import { enqueueScan, processNextScanRun } from "@hilihili/media";
+import { createLogger } from "@hilihili/shared/log";
 import { watch, type FSWatcher } from "chokidar";
+
+const log = createLogger("worker");
 
 const intervalMs = Number(process.env.HILI_SCAN_INTERVAL_MS ?? 900000);
 const watchEnabled = process.env.HILI_WATCH_MEDIA !== "false";
@@ -19,7 +22,7 @@ const stuckRuns = getSqlite().prepare("SELECT id FROM scan_runs WHERE status = '
 for (const run of stuckRuns) {
   getSqlite().prepare("UPDATE scan_runs SET status = 'failed', message = ?, finished_at = ? WHERE id = ?")
     .run("Interrupted by worker restart", new Date().toISOString(), run.id);
-  console.log(`[worker] recovered stuck scan run: ${run.id}`);
+  log.info("recovered stuck scan run", { runId: run.id });
 }
 
 let processing = false;
@@ -31,10 +34,10 @@ async function drainQueue() {
   processing = true;
   try {
     while (await processNextScanRun()) {
-      console.log("[worker] scan run complete");
+      log.info("scan run complete");
     }
   } catch (error) {
-    console.error("[worker] scan failed", error);
+    log.error("scan failed", { error: error instanceof Error ? error.message : String(error) });
   } finally {
     processing = false;
     if (changedLibraries.size > 0) scheduleChangedScans();
@@ -83,13 +86,13 @@ function refreshWatchers() {
         scheduleChangedScans();
       });
       watcher.on("error", (error) => {
-        console.warn(`[worker] media watcher failed for ${library.root_path}; periodic scans remain active`, error);
+        log.warn("media watcher failed; periodic scans remain active", { rootPath: library.root_path, error: error instanceof Error ? error.message : String(error) });
         watcher.close().catch(() => {});
         watchers.delete(library.id);
       });
       watchers.set(library.id, { rootPath: library.root_path, watcher });
     } catch (error) {
-      console.warn(`[worker] unable to watch ${library.root_path}; periodic scans remain active`, error);
+      log.warn("unable to watch; periodic scans remain active", { rootPath: library.root_path, error: error instanceof Error ? error.message : String(error) });
     }
   }
 }
@@ -105,7 +108,7 @@ let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`[worker] received ${signal}, shutting down...`);
+  log.info("shutting down", { signal });
   for (const current of watchers.values()) {
     current.watcher.close().catch(() => {});
   }

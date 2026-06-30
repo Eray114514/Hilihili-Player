@@ -6,10 +6,12 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import os from "node:os";
 import { createId, getDataDir, getSqlite, nowIso, type SqliteDatabase } from "@hilihili/db";
 import { isImagePath, isVideoPath, type MediaKind, type StructureStatus } from "@hilihili/shared";
+import { createLogger } from "@hilihili/shared/log";
 import pLimit from "p-limit";
 import sharp from "sharp";
 
 const require = createRequire(import.meta.url);
+const log = createLogger("media");
 
 type LibraryRow = {
   id: string;
@@ -263,9 +265,9 @@ export async function processNextScanRun() {
       .run(nowIso(), indexed, run.id);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    // 扫描失败不仅要写进 scan_runs.message，也要打到 stdout，否则 worker 日志
+    // 扫描失败不仅要写进 scan_runs.message，也要打到 stderr，否则 worker 日志
     // 只会看到 "scan run complete" 而看不到失败原因。
-    console.error(`[media] scan run ${run.id} failed: ${message}`, error);
+    log.error("scan run failed", { runId: run.id, message });
     db.prepare("UPDATE scan_runs SET status = 'failed', message = ?, finished_at = ? WHERE id = ?")
       .run(message, nowIso(), run.id);
   }
@@ -1084,7 +1086,7 @@ function pruneUnseenItems(db: SqliteDatabase, libraryId: string, seenItemIds: Se
   for (const path of stalePaths) {
     tryUnlink(path);
   }
-  console.log(`[media] pruned ${staleIds.length} stale item(s) from library ${libraryId}`);
+  log.info("pruned stale items", { count: staleIds.length, libraryId });
 }
 
 function getOrCreateTag(db: SqliteDatabase, name: string) {
@@ -1103,7 +1105,7 @@ function pruneOrphanTags(db: SqliteDatabase) {
     WHERE id NOT IN (SELECT DISTINCT tag_id FROM media_tags)
   `).run();
   if (result.changes > 0) {
-    console.log(`[media] pruned ${result.changes} orphan tag(s)`);
+    log.info("pruned orphan tags", { count: result.changes });
   }
 }
 
@@ -1123,7 +1125,7 @@ function fingerprintFile(filePath: string, cache: Map<string, string | null>): s
     }
     result = stableHash(`${stat.size}:${stat.mtimeMs}:${buffer.toString("base64")}`);
   } catch (error) {
-    console.warn(`[media] fingerprint failed: ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+    log.warn("fingerprint failed", { filePath, error: error instanceof Error ? error.message : String(error) });
     result = null;
   }
   cache.set(filePath, result);
@@ -1325,7 +1327,7 @@ function readInfoFile(path: string, cache?: Map<string, InfoJson>): InfoJson {
     try {
       result = JSON.parse(readFileSync(path, "utf8")) as InfoJson;
     } catch {
-      console.warn(`[media] invalid info.json: ${path}`);
+      log.warn("invalid info.json", { path });
     }
   }
   if (cache) cache.set(path, result);
@@ -1530,11 +1532,11 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
       const message = error instanceof Error ? error.message : String(error);
       if (skipCompatibility) {
         // ready part probe 失败不致命：保留 ready 状态，仅记录，继续尝试 sprite。
-        console.warn(`[media] probe failed for ready part: ${part.path}: ${message}`);
+        log.warn("probe failed for ready part", { path: part.path, message });
       } else {
         db.prepare("UPDATE media_parts SET compatibility_status = 'failed', compatibility_error = ?, compatibility_attempts = compatibility_attempts + 1, last_compatibility_attempt_at = ? WHERE id = ?")
           .run(message, nowIso(), part.id);
-        console.warn(`[media] compatibility preparation failed: ${part.path}: ${message}`);
+        log.warn("compatibility preparation failed", { path: part.path, message });
         return;
       }
     }
@@ -1550,7 +1552,7 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
         `).run(sprite.path, sprite.cols, sprite.rows, sprite.interval, sprite.thumbW, sprite.thumbH, part.id);
       }
     } catch (error) {
-      console.warn(`[media] preview sprite failed: ${part.path}: ${error instanceof Error ? error.message : String(error)}`);
+      log.warn("preview sprite failed", { path: part.path, error: error instanceof Error ? error.message : String(error) });
     }
   })));
 
@@ -1583,7 +1585,7 @@ async function generateMissingThumbnails(db: SqliteDatabase, runId: string, libr
         .run(meta.width ?? null, meta.height ?? null, thumbnailPath, isAnimated ? 1 : 0, frameCount, durationMs, image.id);
     } catch (error) {
       // Keep the original available even when thumbnail generation fails.
-      console.warn(`[media] image thumbnail failed: ${image.path}: ${error instanceof Error ? error.message : String(error)}`);
+      log.warn("image thumbnail failed", { path: image.path, error: error instanceof Error ? error.message : String(error) });
     }
   })));
 }
@@ -1992,7 +1994,7 @@ function safeReadText(path: string) {
   try {
     return readFileSync(path, "utf8");
   } catch {
-    console.warn(`[media] unable to read text file: ${path}`);
+    log.warn("unable to read text file", { path });
     return "";
   }
 }
@@ -2006,7 +2008,7 @@ function safeReadDir(path: string) {
   try {
     return readdirSync(path);
   } catch (error) {
-    console.warn(`[media] unable to read directory: ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    log.warn("unable to read directory", { path, error: error instanceof Error ? error.message : String(error) });
     return [];
   }
 }
@@ -2015,7 +2017,7 @@ function safeStat(path: string) {
   try {
     return statSync(path);
   } catch (error) {
-    console.warn(`[media] unable to stat: ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    log.warn("unable to stat", { path, error: error instanceof Error ? error.message : String(error) });
     return null;
   }
 }
@@ -2026,7 +2028,7 @@ function safeRealpath(path: string) {
   try {
     return realpathSync(path);
   } catch (error) {
-    console.warn(`[media] unable to realpath: ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    log.warn("unable to realpath", { path, error: error instanceof Error ? error.message : String(error) });
     return null;
   }
 }
