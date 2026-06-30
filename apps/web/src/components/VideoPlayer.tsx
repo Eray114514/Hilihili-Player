@@ -3,10 +3,15 @@
 import { AlertTriangle, FastForward, LoaderCircle, Maximize, Minimize, Pause, Play, Rewind, Subtitles, Volume2, VolumeX } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { apiUrl, assetUrl, postJson } from "@/lib/api";
-import type { PartDetail } from "@/lib/api";
+import { apiUrl, assetUrl, type PartDetail } from "@/lib/api";
 import { fadeIn, slideDown } from "@/lib/motion";
 import { decodeSubtitle, findActiveCue, parseSubtitle, type SubtitleCue } from "@/lib/subtitles";
+import { ProgressBar } from "@/components/player/ProgressBar";
+import { SubtitleOverlay } from "@/components/player/SubtitleOverlay";
+import { SpeedMenu } from "@/components/player/SpeedMenu";
+import { useVideoProgress } from "@/components/player/useVideoProgress";
+import { SPEEDS } from "@/components/player/constants";
+import { formatTime } from "@/components/player/format";
 
 type VideoPlayerProps = {
   itemId: string;
@@ -16,27 +21,23 @@ type VideoPlayerProps = {
   onEnded?: () => void;
 };
 
-const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
+// 单一播放状态机，消除 playing/buffering/autoPlayBlocked/mediaError 四个布尔的组合歧义
+type PlayerState = "loading" | "playing" | "paused" | "buffering" | "error";
 
 type SubtitleMode = "chinese" | "bilingual";
 
 export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = false, onEnded }: VideoPlayerProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const progressRef = useRef<HTMLDivElement>(null);
   const holdTimerRef = useRef<number | null>(null);
   const hideTimerRef = useRef<number | null>(null);
   const clickTimerRef = useRef<number | null>(null);
   const holdingFastRef = useRef(false);
   const resumedPartRef = useRef<string | null>(null);
-  const stallStartRef = useRef<number>(0);
-  const latestProgressRef = useRef<{ partId: string; positionSeconds: number; durationSeconds: number } | null>(null);
-  const lastSavedRef = useRef<{ partId: string; positionSeconds: number } | null>(null);
-  const completionSentRef = useRef<string | null>(null);
   const subtitleRawRef = useRef<Map<string, string>>(new Map());
   const speedBtnRef = useRef<HTMLButtonElement>(null);
 
-  const [playing, setPlaying] = useState(false);
+  const [state, setState] = useState<PlayerState>("loading");
   const [duration, setDuration] = useState(0);
   const [current, setCurrent] = useState(0);
   const [speed, setSpeed] = useState(1);
@@ -44,18 +45,11 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const [muted, setMuted] = useState(false);
   const [holdingFast, setHoldingFast] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
-  const [autoPlayBlocked, setAutoPlayBlocked] = useState(false);
-  const [buffering, setBuffering] = useState(true);
   const [buffered, setBuffered] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
-  const [hoverTime, setHoverTime] = useState<number | null>(null);
-  const [hoverRatio, setHoverRatio] = useState(0);
-  const [hoverLeftPx, setHoverLeftPx] = useState(0);
   const [loadedSpriteUrl, setLoadedSpriteUrl] = useState<string | null>(null);
   const [failedSpriteUrl, setFailedSpriteUrl] = useState<string | null>(null);
-  const [prevPartId, setPrevPartId] = useState<string | null>(null);
-  const [mediaError, setMediaError] = useState(false);
 
   const [subtitleTracks, setSubtitleTracks] = useState<Map<string, SubtitleCue[]>>(new Map());
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
@@ -118,20 +112,17 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const spriteLoaded = !!spriteUrl && loadedSpriteUrl === spriteUrl;
   const spriteError = !!spriteUrl && failedSpriteUrl === spriteUrl;
 
-  if (part && part.id !== prevPartId) {
-    setPrevPartId(part.id);
-    setBuffering(true);
-    setBuffered(0);
-    setCurrent(0);
-    setDuration(0);
-    setAutoPlayBlocked(false);
-    setHoverTime(null);
-    setMediaError(false);
-    setSubtitleTracks(new Map());
-    setSubtitleCues({ primary: null, secondary: null });
-    setSubtitlesEnabled(part.subtitles.length > 0);
-    setSubtitleMode("bilingual");
-  }
+  // 切换 part 由父组件用 key={activePart?.id} 触发 remount，所有内部 state 自然重置，
+  // 这里不再需要在 render 期 setState 重置（消除原 if (part.id !== prevPartId) 反模式）。
+
+  const { saveProgress, markFinished, latestProgressRef, checkCompletion } = useVideoProgress({
+    itemId,
+    part,
+    duration,
+    isLastPart,
+    videoRef,
+    onEnded
+  });
 
   const updateSubtitleCues = useCallback(() => {
     const video = videoRef.current;
@@ -199,7 +190,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     const video = videoRef.current;
     if (!video) return;
     if (video.paused) {
-      void video.play().then(() => setAutoPlayBlocked(false)).catch(() => setAutoPlayBlocked(true));
+      void video.play().then(() => setState("playing")).catch(() => setState("paused"));
     } else {
       video.pause();
     }
@@ -218,7 +209,6 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     const video = videoRef.current;
     if (!video) return;
     const next = Math.max(0, Math.min(duration || video.duration || 0, video.currentTime + delta));
-    setBuffering(true);
     video.currentTime = next;
     setCurrent(next);
   }, [duration]);
@@ -226,7 +216,6 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const seekTo = useCallback((value: number) => {
     const video = videoRef.current;
     if (!video) return;
-    setBuffering(true);
     video.currentTime = value;
     setCurrent(value);
   }, []);
@@ -239,19 +228,15 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     });
   }, []);
 
-  const saveProgress = useCallback((force = false) => {
-    const progress = latestProgressRef.current;
-    if (!progress || progress.positionSeconds <= 0) return;
-    const lastSaved = lastSavedRef.current;
-    if (!force && lastSaved?.partId === progress.partId && Math.abs(lastSaved.positionSeconds - progress.positionSeconds) < 2) return;
-    lastSavedRef.current = { partId: progress.partId, positionSeconds: progress.positionSeconds };
-    void fetch(apiUrl(`/items/${itemId}/interactions`), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "watch", ...progress }),
-      keepalive: true
-    }).catch(() => undefined);
-  }, [itemId]);
+  // 拖动进度条期间保持控件可见，拖动结束后重新启动自动隐藏计时
+  const handleDraggingChange = useCallback((dragging: boolean) => {
+    if (dragging) {
+      setControlsVisible(true);
+      if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
+    } else {
+      showControls();
+    }
+  }, [showControls]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -284,39 +269,6 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, []);
 
-  useEffect(() => {
-    const btn = speedBtnRef.current;
-    if (!btn) return;
-    const onWheel = (event: WheelEvent) => {
-      event.preventDefault();
-      cycleSpeed(event.deltaY > 0 ? 1 : -1);
-    };
-    btn.addEventListener("wheel", onWheel, { passive: false });
-    return () => btn.removeEventListener("wheel", onWheel);
-  }, [cycleSpeed]);
-
-  useEffect(() => {
-    if (!part) return;
-    completionSentRef.current = null;
-    latestProgressRef.current = { partId: part.id, positionSeconds: 0, durationSeconds: part.durationSeconds ?? 0 };
-    const timer = window.setInterval(() => {
-      const video = videoRef.current;
-      if (video && !video.paused && video.currentTime > 0) {
-        saveProgress();
-      }
-    }, 10000);
-    const handlePageHide = () => saveProgress(true);
-    const handleVisibilityChange = () => { if (document.visibilityState === "hidden") saveProgress(true); };
-    window.addEventListener("pagehide", handlePageHide);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("pagehide", handlePageHide);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      saveProgress(true);
-    };
-  }, [part, saveProgress]);
-
   useEffect(() => () => {
     if (holdTimerRef.current) window.clearTimeout(holdTimerRef.current);
     if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
@@ -340,64 +292,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     return false;
   }
 
-  function markFinished() {
-    void postJson(`/items/${itemId}/interactions`, {
-      kind: "finish",
-      partId,
-      positionSeconds: duration,
-      durationSeconds: duration
-    });
-    onEnded?.();
-  }
-
-  function handleProgressHover(event: React.PointerEvent<HTMLDivElement>) {
-    const bar = progressRef.current;
-    if (!bar || !duration) return;
-    const rect = bar.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    const time = ratio * duration;
-    setHoverTime(time);
-    setHoverRatio(ratio);
-    const halfW = spriteInfo ? spriteInfo.thumbW / 2 : 40;
-    const rawPx = ratio * rect.width;
-    setHoverLeftPx(Math.max(halfW, Math.min(rect.width - halfW, rawPx)));
-  }
-
-  function handleProgressLeave() {
-    setHoverTime(null);
-  }
-
-  function handleProgressClick(event: React.PointerEvent<HTMLDivElement>) {
-    const bar = progressRef.current;
-    if (!bar || !duration) return;
-    const rect = bar.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    seekTo(ratio * duration);
-  }
-
-  const hoverTileIndex = hoverTime != null && spriteInfo
-    ? Math.min(
-        spriteInfo.cols * spriteInfo.rows - 1,
-        Math.floor(hoverTime / spriteInfo.interval)
-      )
-    : -1;
-
-  const previewBgX = hoverTileIndex >= 0 && spriteInfo
-    ? -(hoverTileIndex % spriteInfo.cols) * spriteInfo.thumbW
-    : 0;
-  const previewBgY = hoverTileIndex >= 0 && spriteInfo
-    ? -Math.floor(hoverTileIndex / spriteInfo.cols) * spriteInfo.thumbH
-    : 0;
-
-  const progressPct = duration > 0 ? (current / duration) * 100 : 0;
-  const bufferedPct = duration > 0 ? (buffered / duration) * 100 : 0;
-  const hoverPct = hoverRatio * 100;
-
-  const subtitlePositionClasses = subtitlePosition === "bottom"
-    ? controlsVisible
-      ? isFullscreen ? "bottom-12 justify-end" : "bottom-[5.5rem] justify-end"
-      : "bottom-4 justify-end"
-    : isFullscreen ? "top-4 justify-start" : "top-6 justify-start";
+  const showSpinner = (state === "loading" || state === "buffering") && !holdingFast;
 
   return (
     <section
@@ -407,6 +302,8 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
       onMouseMove={showControls}
       onFocus={showControls}
       onKeyDown={(event) => {
+        // 排除 Ctrl/Cmd/Alt 修饰键，避免与浏览器/系统快捷键冲突；Shift 单独放行
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
         if (event.code === "Space") { event.preventDefault(); togglePlay(); }
         if (event.key.toLowerCase() === "k") { event.preventDefault(); togglePlay(); }
         if (event.key.toLowerCase() === "j") { event.preventDefault(); seekBy(-10); }
@@ -469,14 +366,11 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
           playsInline
           autoPlay
           preload="auto"
-          onPlay={() => { setPlaying(true); setBuffering(false); stallStartRef.current = 0; }}
-          onPause={() => { setPlaying(false); saveProgress(true); }}
-          onWaiting={() => {
-            setBuffering(true);
-            if (!stallStartRef.current) stallStartRef.current = Date.now();
-          }}
-          onPlaying={() => { setBuffering(false); stallStartRef.current = 0; }}
-          onCanPlay={() => { setBuffering(false); stallStartRef.current = 0; }}
+          onPlay={() => setState("playing")}
+          onPause={() => { setState("paused"); saveProgress(true); }}
+          onWaiting={() => setState("buffering")}
+          onPlaying={() => setState(videoRef.current?.paused ? "paused" : "playing")}
+          onCanPlay={() => setState(videoRef.current?.paused ? "paused" : "playing")}
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
             const dur = video.duration || 0;
@@ -487,17 +381,14 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
               resumedPartRef.current = partId;
             }
             latestProgressRef.current = { partId, positionSeconds: video.currentTime, durationSeconds: dur };
-            void video.play().catch(() => setAutoPlayBlocked(true));
+            void video.play().then(() => setState("playing")).catch(() => setState("paused"));
           }}
           onTimeUpdate={(event) => {
             const video = event.currentTarget;
             setCurrent(video.currentTime);
             updateSubtitleCues();
             latestProgressRef.current = { partId, positionSeconds: video.currentTime, durationSeconds: video.duration || duration };
-            if (isLastPart && video.duration > 0 && video.currentTime >= video.duration * 0.9 && completionSentRef.current !== partId) {
-              completionSentRef.current = partId;
-              saveProgress(true);
-            }
+            checkCompletion(video.currentTime, video.duration);
           }}
           onVolumeChange={(event) => {
             const v = event.currentTarget;
@@ -506,23 +397,21 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
           }}
           onProgress={(event) => {
             const video = event.currentTarget;
-            if (video.buffered.length > 0) {
-              setBuffered(video.buffered.end(video.buffered.length - 1));
-            }
+            setBuffered(computeBufferedAhead(video));
           }}
           onEnded={markFinished}
-          onError={() => { setBuffering(false); setPlaying(false); setMediaError(true); }}
+          onError={() => setState("error")}
         />
       </div>
 
-      {mediaError ? (
+      {state === "error" ? (
         <div className="pointer-events-none absolute left-1/2 top-1/2 flex w-[min(90%,28rem)] -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-3 rounded-xl bg-black/80 p-5 text-center text-sm text-white/75">
           <AlertTriangle size={32} className="text-amber-400" />
           <span>{part.compatibilityStatus === "failed" ? "该视频转换失败，请检查 worker 日志或源文件是否损坏。" : "浏览器无法加载该视频，请重新扫描媒体库后再试。"}</span>
         </div>
       ) : (
         <AnimatePresence>
-          {buffering && !holdingFast ? (
+          {showSpinner ? (
             <motion.div
               key="buffering-spinner"
               variants={fadeIn}
@@ -537,28 +426,20 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         </AnimatePresence>
       )}
       {holdingFast ? <div className="pointer-events-none absolute left-1/2 top-5 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-sm font-semibold">3× 快进中</div> : null}
-      {autoPlayBlocked || (!playing && !buffering) ? (
+      {state === "paused" ? (
         <button className="absolute left-1/2 top-1/2 grid h-16 w-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-white/92 text-black shadow-xl transition hover:scale-105" onClick={togglePlay} aria-label="播放">
           <Play className="ml-1" size={28} fill="currentColor" />
         </button>
       ) : null}
 
-      {showSubtitles ? (
-        <div
-          className={`pointer-events-none absolute inset-x-0 z-10 flex flex-col items-center px-4 text-center transition-[bottom] duration-200 ease-out sm:px-8 ${subtitlePositionClasses}`}
-        >
-          {subtitleCues.primary ? (
-            <div className="max-w-[90%] rounded bg-black/70 px-3 py-1 text-base font-medium leading-snug text-white shadow-lg [text-shadow:0_1px_2px_rgba(0,0,0,.8)]">
-              {subtitleCues.primary.primaryText}
-            </div>
-          ) : null}
-          {subtitleMode === "bilingual" && (subtitleCues.primary?.secondaryText || subtitleCues.secondary) ? (
-            <div className="mt-0.5 max-w-[85%] rounded bg-black/60 px-1.5 py-px text-[0.625rem] leading-tight text-white/85 shadow-md [text-shadow:0_1px_2px_rgba(0,0,0,.8)]">
-              {subtitleCues.primary?.secondaryText || subtitleCues.secondary?.primaryText}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+      <SubtitleOverlay
+        cues={subtitleCues}
+        mode={subtitleMode}
+        position={subtitlePosition}
+        controlsVisible={controlsVisible}
+        isFullscreen={isFullscreen}
+        visible={showSubtitles}
+      />
 
       <div
         className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent px-3 pb-2 pt-12 transition-opacity duration-200 ${controlsVisible ? "opacity-100" : "pointer-events-none opacity-0"}`}
@@ -566,64 +447,21 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         onPointerUp={(event) => event.stopPropagation()}
         onMouseMove={(event) => event.stopPropagation()}
       >
-        <div
-          ref={progressRef}
-          className="group/progress relative h-5 cursor-pointer py-2"
-          onPointerMove={handleProgressHover}
-          onPointerLeave={handleProgressLeave}
-          onPointerDown={handleProgressClick}
-        >
-          <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/20 transition-[height] duration-100 group-hover/progress:h-1.5">
-            <div className="h-full bg-white/35 transition-[width] duration-100" style={{ width: `${bufferedPct}%` }} />
-          </div>
-          <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full transition-[height] duration-100 group-hover/progress:h-1.5">
-            <div className="h-full bg-[var(--accent)] transition-[width] duration-100" style={{ width: `${progressPct}%` }} />
-          </div>
-          {hoverTime != null ? (
-            <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full transition-[height] duration-100 group-hover/progress:h-1.5">
-              <div className="h-full bg-white/25" style={{ width: `${hoverPct}%` }} />
-            </div>
-          ) : null}
-          <div
-            className="pointer-events-none absolute top-1/2 h-[10px] w-[10px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--accent)] shadow-md ring-[1.5px] ring-black/45 transition-transform group-hover/progress:scale-110"
-            style={{ left: `${progressPct}%` }}
-          />
-
-          {hoverTime != null && spriteUrl && spriteInfo && hoverTileIndex >= 0 && !spriteError ? (
-            <div
-              className="pointer-events-none absolute -top-2 -translate-x-1/2 -translate-y-full overflow-hidden rounded-lg border border-white/15 bg-black shadow-2xl"
-              style={{ left: hoverLeftPx }}
-            >
-              <div
-                className="relative overflow-hidden bg-black"
-                style={{
-                  width: spriteInfo.thumbW,
-                  height: spriteInfo.thumbH,
-                  backgroundImage: spriteLoaded ? `url("${spriteUrl}")` : undefined,
-                  backgroundPosition: `${previewBgX}px ${previewBgY}px`,
-                  backgroundRepeat: "no-repeat",
-                  backgroundSize: `${spriteInfo.thumbW * spriteInfo.cols}px ${spriteInfo.thumbH * spriteInfo.rows}px`
-                }}
-              >
-                {spriteLoaded ? null : <div className="absolute inset-0 skeleton-shimmer bg-white/10" />}
-              </div>
-              <div className="bg-black/80 px-2 py-1 text-center text-xs font-medium tabular-nums text-white/90">
-                {formatTime(hoverTime)}
-              </div>
-            </div>
-          ) : hoverTime != null ? (
-            <div
-              className="pointer-events-none absolute -top-2 -translate-x-1/2 -translate-y-full rounded-md bg-black/90 px-2 py-1 text-xs tabular-nums text-white shadow-lg"
-              style={{ left: hoverLeftPx }}
-            >
-              {formatTime(hoverTime)}
-            </div>
-          ) : null}
-        </div>
+        <ProgressBar
+          duration={duration}
+          current={current}
+          buffered={buffered}
+          spriteUrl={spriteUrl}
+          spriteInfo={spriteInfo}
+          spriteLoaded={spriteLoaded}
+          spriteError={spriteError}
+          onSeekTo={seekTo}
+          onDraggingChange={handleDraggingChange}
+        />
 
         <div className="flex h-9 items-center gap-0.5">
-          <button className="player-btn" onClick={togglePlay} aria-label={playing ? "暂停 (K)" : "播放 (K)"}>
-            {playing ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
+          <button className="player-btn" onClick={togglePlay} aria-label={state === "playing" ? "暂停 (K)" : "播放 (K)"}>
+            {state === "playing" ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
           </button>
           <button className="player-btn" onClick={() => seekBy(-10)} aria-label="后退10秒 (J)">
             <Rewind size={18} />
@@ -713,39 +551,14 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
               </div>
             ) : null}
 
-            <div className="relative">
-              <button
-                ref={speedBtnRef}
-                className="player-btn min-w-[2.75rem] px-2 text-sm font-medium"
-                onClick={() => setSpeedMenuOpen((v) => !v)}
-                aria-label="播放速度"
-              >
-                {speed}×
-              </button>
-              {speedMenuOpen ? <div className="fixed inset-0 z-10" onClick={() => setSpeedMenuOpen(false)} /> : null}
-              <AnimatePresence>
-                {speedMenuOpen ? (
-                  <motion.div
-                    key="speed-menu"
-                    variants={slideDown}
-                    initial="hidden"
-                    animate="visible"
-                    exit="exit"
-                    className="absolute bottom-full right-0 z-20 mb-1 overflow-hidden rounded-lg border border-white/10 bg-[#1a1c22] py-1 shadow-xl"
-                  >
-                    {SPEEDS.map((value) => (
-                      <button
-                        key={value}
-                        className={`flex w-20 items-center justify-center px-3 py-1.5 text-sm transition ${value === speed ? "bg-[var(--accent-soft)] text-[var(--accent)]" : "text-white/70 hover:bg-white/8 hover:text-white"}`}
-                        onClick={() => { setSpeed(value); setSpeedMenuOpen(false); }}
-                      >
-                        {value}×
-                      </button>
-                    ))}
-                  </motion.div>
-                ) : null}
-              </AnimatePresence>
-            </div>
+            <SpeedMenu
+              speed={speed}
+              onSpeedChange={setSpeed}
+              open={speedMenuOpen}
+              onOpenChange={setSpeedMenuOpen}
+              buttonRef={speedBtnRef}
+              onWheelChange={cycleSpeed}
+            />
 
             <button className="player-btn" onClick={toggleFullscreen} aria-label={isFullscreen ? "退出全屏 (F)" : "全屏 (F)"}>
               {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
@@ -757,12 +570,16 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   );
 }
 
-function formatTime(value: number) {
-  if (!Number.isFinite(value) || value < 0) return "00:00";
-  const hours = Math.floor(value / 3600);
-  const minutes = Math.floor((value % 3600) / 60);
-  const seconds = Math.floor(value % 60);
-  return hours > 0
-    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
-    : `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+// 计算当前播放位置之后已缓冲的终点，支持 HTTP Range 产生的多段缓冲
+function computeBufferedAhead(video: HTMLVideoElement): number {
+  const ranges = video.buffered;
+  if (ranges.length === 0) return 0;
+  const current = video.currentTime;
+  for (let i = 0; i < ranges.length; i++) {
+    if (current >= ranges.start(i) && current <= ranges.end(i)) {
+      return ranges.end(i);
+    }
+  }
+  // current 不在任何段内（罕见，例如 seek 到未缓冲区）：返回最接近的段端点
+  return ranges.end(ranges.length - 1);
 }

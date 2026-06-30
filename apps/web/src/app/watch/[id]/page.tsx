@@ -194,6 +194,9 @@ export default function WatchPage() {
         <motion.div variants={fadeIn} initial="hidden" animate="visible" className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
           <main className="min-w-0">
             <VideoPlayer
+              // 切换 part 时通过 key 让整个组件 remount，所有内部 state 自然重置，
+              // 消除原 VideoPlayer 内 render 期 setState 重置 part 状态的反模式。
+              key={activePart?.id}
               itemId={detail.item.id}
               part={activePart}
               resumePosition={activePart?.id === detail.item.resumePartId ? detail.item.resumePositionSeconds ?? 0 : 0}
