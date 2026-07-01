@@ -1109,6 +1109,23 @@ function clearLegacyChildren(db: SqliteDatabase, libraryId: string, folderPath: 
 
 function pruneUnseenItems(db: SqliteDatabase, libraryId: string, seenItemIds: Set<string>) {
   const existing = db.prepare("SELECT id FROM media_items WHERE library_id = ?").all(libraryId) as { id: string }[];
+
+  // 防御性保护：如果本次扫描没见到任何 item，但库里已有 item，几乎肯定是扫描异常
+  // （媒体挂载未就绪 / 权限不足 / 路径变化导致 safeReadDir 返回空）。
+  // 此时绝不能 prune——否则会级联删除 watch_progress / item_preferences /
+  // favorite_entries / interactions 等不可恢复的用户数据。
+  // 宁可保留旧数据，抛错让 scan_run 标记 failed，等用户修好挂载后重新扫描。
+  if (seenItemIds.size === 0 && existing.length > 0) {
+    log.error("refusing to prune all items: scan saw 0 items but library has existing items (mount not ready?)", {
+      libraryId,
+      existingCount: existing.length
+    });
+    throw new Error(
+      `扫描到 0 个条目但库中已有 ${existing.length} 条记录，拒绝清空（媒体挂载未就绪或权限问题？）。` +
+      `现有数据已保留，请确认挂载正常后重新扫描。`
+    );
+  }
+
   const staleIds = existing.map((row) => row.id).filter((id) => !seenItemIds.has(id));
   if (staleIds.length === 0) return;
 

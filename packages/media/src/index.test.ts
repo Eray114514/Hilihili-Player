@@ -238,3 +238,30 @@ test("scanner aggregates creator profiles and emits one message for a followed U
   assert.equal((await scanLibrary(libraryId)).indexed, 3);
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM creator_messages WHERE creator_id = ?").get(creator.id) as { count: number }).count, 1, "repeated scans must not duplicate messages");
 });
+
+test("scanner refuses to prune all items when a scan sees nothing (mount not ready)", async () => {
+  // 回归测试：媒体挂载未就绪时 safeReadDir 返回空，扫描器扫到 0 个文件。
+  // 此前 pruneUnseenItems 会清空整个库（级联删 watch_progress/favorites 等）。
+  // 现在必须拒绝清空并抛错，保留现有数据。
+  const root = join(sandbox, "empty-scan-library");
+  const videoDir = join(root, "科技", "UP");
+  mkdirSync(videoDir, { recursive: true });
+  writeFileSync(join(videoDir, "video.mp4"), "video");
+
+  const db = getSqlite();
+  const libraryId = createId("lib");
+  db.prepare("INSERT INTO libraries (id, name, root_path, enabled, created_at) VALUES (?, ?, ?, 1, ?)").run(libraryId, "空扫描测试库", root, nowIso());
+  assert.equal((await scanLibrary(libraryId)).indexed, 1);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM media_items WHERE library_id = ?").get(libraryId) as { count: number }).count, 1);
+
+  // 模拟媒体挂载未就绪：清空目录内容（root 本身仍存在，scanRoot 不会 throw）
+  rmSync(join(root, "科技"), { recursive: true });
+
+  // 再扫描：扫到 0 个文件，但库里有 1 个 item，必须拒绝清空并抛错
+  await assert.rejects(scanLibrary(libraryId), /拒绝清空/);
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS count FROM media_items WHERE library_id = ?").get(libraryId) as { count: number }).count,
+    1,
+    "items must be preserved when a scan sees nothing"
+  );
+});
