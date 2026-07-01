@@ -35,8 +35,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=backend-deploy /prod/backend ./
-RUN mkdir -p /data && chown -R node:node /app /data
-USER node
+# 以 root 运行：named volume 挂载的 /data 可能含旧镜像以 root 创建的
+# db/wal/shm 文件，USER node 会导致 SQLITE_READONLY 崩溃循环。
+# LAN-only 自托管场景，root 运行可接受且彻底避免权限问题。
+RUN mkdir -p /data
 EXPOSE 4141
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD node -e "fetch('http://localhost:4141/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "--import", "tsx", "node_modules/@hilihili/api/src/index.ts"]
