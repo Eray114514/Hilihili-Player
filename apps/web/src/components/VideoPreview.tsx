@@ -102,7 +102,7 @@ export function VideoPreview({ previewPartId, posterUrl, alt, sizes, priority = 
       onMouseMove={startPreview}
       onMouseLeave={stopPreview}
     >
-      {posterUrl && !posterFailed ? <ApiImage src={posterUrl} alt={alt} fill priority={priority} sizes={sizes} onError={() => setPosterFailed(true)} className={`object-cover transition duration-300 ${previewing && ready ? "scale-[1.015] opacity-0" : "opacity-100"}`} /> : fallback ?? <span className="grid h-full place-items-center text-white/35"><Play size={32} /></span>}
+      {posterUrl && !posterFailed ? <ApiImage src={posterUrl} alt={alt} fill loading={priority ? "eager" : "lazy"} sizes={sizes} onError={() => setPosterFailed(true)} className={`object-cover transition duration-300 ${previewing && ready ? "scale-[1.015] opacity-0" : "opacity-100"}`} /> : fallback ?? <span className="grid h-full place-items-center text-white/35"><Play size={32} /></span>}
       {requested && previewPartId ? (
         <video
           ref={videoRef}
