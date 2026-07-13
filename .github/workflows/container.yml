@@ -87,8 +87,13 @@ jobs:
           cache-from: type=gha,scope=deploy-console
           cache-to: type=gha,mode=max,scope=deploy-console
       - name: Trigger NAS deployment
-        if: github.event_name == 'push' && secrets.DEPLOY_HOOK_URL != '' && secrets.DEPLOY_HOOK_TOKEN != ''
+        if: github.event_name == 'push'
         env:
           DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
           DEPLOY_HOOK_TOKEN: ${{ secrets.DEPLOY_HOOK_TOKEN }}
-        run: curl --fail --silent --show-error --retry 3 -X POST "$DEPLOY_HOOK_URL/hook/hilihili" -H "Authorization: Bearer $DEPLOY_HOOK_TOKEN"
+        run: |
+          if [ -z "$DEPLOY_HOOK_URL" ] || [ -z "$DEPLOY_HOOK_TOKEN" ]; then
+            echo "Deployment hook is not configured; skipping."
+            exit 0
+          fi
+          curl --fail --silent --show-error --retry 3 -X POST "$DEPLOY_HOOK_URL/hook/hilihili" -H "Authorization: Bearer $DEPLOY_HOOK_TOKEN"
