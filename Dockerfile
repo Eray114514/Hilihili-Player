@@ -63,4 +63,5 @@ WORKDIR /app
 COPY scripts/deploy-console.mjs ./
 RUN mkdir -p /data
 EXPOSE 8787
+ENTRYPOINT []
 CMD ["node", "deploy-console.mjs"]
