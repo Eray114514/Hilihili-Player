@@ -91,7 +91,7 @@ UP 目录可放置一个 `info.json`。头像和横幅均为该目录下的相�
 1. 推送代码到 GitHub。
 2. GitHub Actions 构建镜像并推送到 GHCR。
 3. NAS 使用 `docker-compose.yml` 启动服务。
-4. NAS 上安装 Watchtower，自动拉取 Web 与后端镜像的新版本。
+4. Compose 内置 `updater` 服务，每 15 分钟运行一次 `scripts/nas-update.sh`，自动拉取并重建有新镜像的服务；不需要 NAS 公网入口、Watchtower 或青龙定时任务。
 
 镜像名必须全小写；本仓库发布 `ghcr.io/eray114514/hilihili-player:web` 与 `ghcr.io/eray114514/hilihili-player:backend` 两个标签，`docker-compose.yml` 会分别用于 Web 和 API/Worker。NAS 不需要把 Docker 默认镜像源改成 GHCR，镜像地址里的 `ghcr.io` 会让 Docker 直接从 GitHub Container Registry 拉取。仓库和 package 如果保持私有，需要先在 NAS 上执行一次：
 

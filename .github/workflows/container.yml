@@ -75,3 +75,20 @@ jobs:
             ghcr.io/${{ env.IMAGE_OWNER }}/hilihili-player:backend-${{ github.sha }}
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
+      - name: Build and push deploy console image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: deploy-console
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ghcr.io/${{ env.IMAGE_OWNER }}/hilihili-player:deploy-console
+            ghcr.io/${{ env.IMAGE_OWNER }}/hilihili-player:deploy-console-${{ github.sha }}
+          cache-from: type=gha,scope=deploy-console
+          cache-to: type=gha,mode=max,scope=deploy-console
+      - name: Trigger NAS deployment
+        if: github.event_name == 'push' && secrets.DEPLOY_HOOK_URL != '' && secrets.DEPLOY_HOOK_TOKEN != ''
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
+          DEPLOY_HOOK_TOKEN: ${{ secrets.DEPLOY_HOOK_TOKEN }}
+        run: curl --fail --silent --show-error --retry 3 -X POST "$DEPLOY_HOOK_URL/hook/hilihili" -H "Authorization: Bearer $DEPLOY_HOOK_TOKEN"

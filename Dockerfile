@@ -56,3 +56,11 @@ USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node -e "fetch('http://localhost:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "apps/web/server.js"]
+
+FROM docker:cli AS deploy-console
+RUN apk add --no-cache nodejs
+WORKDIR /app
+COPY scripts/deploy-console.mjs ./
+RUN mkdir -p /data
+EXPOSE 8787
+CMD ["node", "deploy-console.mjs"]

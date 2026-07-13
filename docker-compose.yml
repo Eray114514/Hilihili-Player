@@ -13,8 +13,6 @@ services:
       - ${HILI_MEDIA_ROOT:-/media}:/media
     networks:
       - backend
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
     restart: unless-stopped
 
   worker:
@@ -29,8 +27,6 @@ services:
       - ${HILI_MEDIA_ROOT:-/media}:/media
     networks:
       - backend
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
     restart: unless-stopped
 
   web:
@@ -40,34 +36,52 @@ services:
     ports:
       - "3001:3000"
     depends_on:
-      api:
-        condition: service_healthy
+      - api
     networks:
       - backend
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
     restart: unless-stopped
 
-  watchtower:
-    image: containrrr/watchtower:latest
-    container_name: watchtower
+  updater:
+    image: docker:cli
+    working_dir: /workspace
+    environment:
+      HILI_COMPOSE_DIR: /workspace
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        while true; do
+          /workspace/scripts/nas-update.sh
+          sleep 900
+        done
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      WATCHTOWER_INTERVAL: 60
-      WATCHTOWER_LABEL_ENABLE: "true"
-      WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_INCLUDE_STOPPED: "false"
-      TZ: Asia/Shanghai
+      - ./:/workspace:ro
     networks:
-      - watchtower-net
+      - backend
+    restart: unless-stopped
+
+  deploy-console:
+    image: ghcr.io/eray114514/hilihili-player:deploy-console
+    env_file:
+      - .deploy.env
+    environment:
+      PORT: 8787
+      DEPLOY_PROJECTS: '[{"id":"hilihili","name":"Hilihili Player","directory":"/workspace","project":"hilihili","services":["api","worker","web"]}]'
+    ports:
+      - "8787:8787"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/workspace:ro
+      - deploy-console-data:/data
+    networks:
+      - backend
     restart: unless-stopped
 
 volumes:
   hilihili-data:
+  deploy-console-data:
 
 networks:
   backend:
-    driver: bridge
-  watchtower-net:
     driver: bridge
