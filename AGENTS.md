@@ -105,7 +105,7 @@ Copy `.env.example` to `.env`. Key vars:
 
 ## Safe demo mode
 
-`pnpm dev:safe` seeds fake media (color bars + test images) into `.hilihili-safe-demo/`, uses a separate SQLite DB, and restricts file access to the demo library. Useful for UI development without real media.
+`pnpm dev:safe` seeds fake media (color bars + test images) into `.hilihili-safe-demo/`, uses a separate SQLite DB, and restricts file access to the demo library. Useful for UI development without real media. AI若要进行浏览器验证，必须打开 Safe demo mode。
 
 ## Conventions
 
