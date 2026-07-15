@@ -75,8 +75,29 @@ type InfoJson = {
 
 const SUBTITLE_EXTS = [".srt", ".vtt"];
 
-// 缩略图/转码并发：留一个核给主线程事件循环，ffmpeg/sharp 自身多线程利用其他核
-const THUMBNAIL_CONCURRENCY = Math.max(1, os.cpus().length - 1);
+// 检测容器/进程实际可用的 CPU 核心数。os.cpus() 返回宿主机核心数，在 Docker 内
+// 会忽略 cgroup 限额导致过高并发。优先读 cgroup v2 (cpu.max) 和 v1 (cpu.cfs_*_us)。
+function detectEffectiveCpuCount(): number {
+  try {
+    const content = readFileSync("/sys/fs/cgroup/cpu.max", "utf8").trim();
+    if (content !== "max") {
+      const [quota, period] = content.split(/\s+/).map(Number);
+      if (quota > 0 && period > 0) return Math.max(1, Math.floor(quota / period));
+    }
+  } catch { /* not cgroup v2 */ }
+  try {
+    const quota = Number(readFileSync("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "utf8").trim());
+    const period = Number(readFileSync("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "utf8").trim());
+    if (quota > 0 && period > 0) return Math.max(1, Math.floor(quota / period));
+  } catch { /* not cgroup v1 */ }
+  return os.cpus().length;
+}
+
+// 缩略图/转码并发：留一个核给主线程事件循环，ffmpeg/sharp 自身多线程利用其他核。
+// os.cpus() 返回宿主机核心数，在 Docker 容器内会远超容器实际可用 CPU，导致并发
+// 过高、内存暴涨。优先读 cgroup 限额，读不到再退回 os.cpus()。sharp 处理动图时
+// 会把所有帧载入内存，单任务内存开销大，额外封顶 4 避免多核机器上同时跑太多实例。
+const THUMBNAIL_CONCURRENCY = Math.max(1, Math.min(4, detectEffectiveCpuCount() - 1));
 // 图片缩略图边长（sharp resize inside，不放大）
 const IMAGE_THUMB_SIZE = 720;
 // 预览雪碧图最小视频时长（秒）；短于该值不生成 sprite
@@ -1653,11 +1674,15 @@ async function preparePartCompatibility(db: SqliteDatabase, libraryIds: string[]
 // 阶段 3：为 media_images 生成缩略图 + 提取动画元数据
 async function generateMissingImageThumbnails(db: SqliteDatabase, libraryIds: string[], limiter: Limiter) {
   const placeholders = libraryIds.map(() => "?").join(",");
+  // 只选尚未完整处理的图片：thumbnail_path / width / is_animated 任一为 NULL 即代表
+  // 还没跑过此阶段。已完整处理的图片在后续扫描中直接跳过，避免每次扫描都用
+  // sharp 重新读取全部图片文件（动图会加载所有帧到内存，是 worker CPU/内存暴涨的根因）。
   const imageRows = db.prepare(`
     SELECT mimg.id, mimg.path, mimg.fingerprint, mimg.thumbnail_path, mimg.is_animated
     FROM media_images mimg
     JOIN media_items mi ON mi.id = mimg.item_id
     WHERE mi.library_id IN (${placeholders})
+      AND (mimg.thumbnail_path IS NULL OR mimg.width IS NULL OR mimg.is_animated IS NULL)
   `).all(...libraryIds) as { id: string; path: string; fingerprint: string; thumbnail_path: string | null; is_animated: number | null }[];
   await Promise.all(imageRows.map((image) => limiter(async () => {
     try {

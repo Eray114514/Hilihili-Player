@@ -104,8 +104,26 @@ function RunIcon({ run }: { run?: ScanRun }) {
 
 function RunProgress({ run }: { run: ScanRun }) {
   const thumbnailDone = run.thumbnailsReady + run.thumbnailsFailed;
-  const progress = run.thumbnailsTotal > 0 ? Math.round((thumbnailDone / run.thumbnailsTotal) * 100) : run.status === "complete" ? 100 : 12;
-  const label = run.status === "queued" ? "等待扫描" : run.status === "running" ? (run.thumbnailsTotal > 0 ? `生成缩略图 ${thumbnailDone}/${run.thumbnailsTotal}` : `正在索引 · 已发现 ${run.itemsIndexed}`) : run.status === "failed" ? `失败：${run.message ?? "未知错误"}` : `完成 · ${run.itemsIndexed} 个内容`;
+  // 封面生成只是扫描的第 1 阶段（共 3 阶段：封面 → 视频转码 → 图片缩略图）。
+  // thumbnailsTotal/Ready 只反映第 1 阶段，阶段 2/3 仍在跑时 status 还是 running。
+  // 若直接按 thumbnailDone/total 算 100%，会出现"进度 100% 但圈一直转"的误导。
+  // running 状态下封顶 95%，只有 status === complete 才显示 100%。
+  const progress = run.status === "complete"
+    ? 100
+    : run.thumbnailsTotal > 0
+      ? Math.min(95, Math.round((thumbnailDone / run.thumbnailsTotal) * 100))
+      : 12;
+  const label = run.status === "queued"
+    ? "等待扫描"
+    : run.status === "running"
+      ? (run.thumbnailsTotal > 0 && thumbnailDone >= run.thumbnailsTotal
+        ? "正在处理视频与图片…"
+        : run.thumbnailsTotal > 0
+          ? `生成缩略图 ${thumbnailDone}/${run.thumbnailsTotal}`
+          : `正在索引 · 已发现 ${run.itemsIndexed}`)
+      : run.status === "failed"
+        ? `失败：${run.message ?? "未知错误"}`
+        : `完成 · ${run.itemsIndexed} 个内容`;
   // 扫描自检：失败/跳过计数仅在 >0 时展示，便于发现"个别条目异常但整体完成"的情况。
   const warnings: string[] = [];
   if (run.itemsFailed > 0) warnings.push(`${run.itemsFailed} 失败`);
