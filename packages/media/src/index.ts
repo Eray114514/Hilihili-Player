@@ -1585,6 +1585,11 @@ async function preparePartCompatibility(db: SqliteDatabase, libraryIds: string[]
         AND mp.last_compatibility_attempt_at IS NOT NULL
         AND datetime(mp.last_compatibility_attempt_at) > datetime('now', '-24 hours')
       )
+      AND NOT (
+        mp.compatibility_status = 'ready'
+        AND mp.duration_seconds IS NOT NULL
+        AND (mp.preview_sprite_path IS NOT NULL OR mp.duration_seconds <= 3)
+      )
   `).all(...libraryIds) as {
     id: string; path: string; fingerprint: string; duration_seconds: number | null;
     preview_sprite_path: string | null; stream_path: string | null;
@@ -1607,6 +1612,25 @@ async function preparePartCompatibility(db: SqliteDatabase, libraryIds: string[]
       return;
     }
     const skipCompatibility = part.compatibility_status === "ready";
+    // ready 且 duration 已知时无需再 probe：兼容性已就绪、duration 不缺，只剩 sprite 工作可能待做。
+    // probe 会 spawn ffprobe 子进程，对原生可播放视频（ready + stream_path NULL）每次扫描都重复跑，
+    // 是 worker 持续高 CPU 的主因。仅当需要补 duration 或判定兼容性时才 probe。
+    if (skipCompatibility && part.duration_seconds) {
+      try {
+        const spriteExists = part.preview_sprite_path && existsSync(part.preview_sprite_path);
+        if (!spriteExists && duration > SPRITE_MIN_DURATION_SECONDS) {
+          const sprite = await generatePreviewSprite(part.path, part.fingerprint, duration);
+          db.prepare(`
+            UPDATE media_parts SET preview_sprite_path = ?, preview_sprite_cols = ?, preview_sprite_rows = ?,
+              preview_sprite_interval = ?, preview_thumb_w = ?, preview_thumb_h = ?
+            WHERE id = ?
+          `).run(sprite.path, sprite.cols, sprite.rows, sprite.interval, sprite.thumbW, sprite.thumbH, part.id);
+        }
+      } catch (error) {
+        log.warn("preview sprite failed", { path: part.path, error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     try {
       const mediaInfo = await probeMedia(part.path);
       duration ||= mediaInfo.duration;
