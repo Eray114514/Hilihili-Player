@@ -10,7 +10,7 @@ import { ProgressBar } from "@/components/player/ProgressBar";
 import { SubtitleOverlay } from "@/components/player/SubtitleOverlay";
 import { SpeedMenu } from "@/components/player/SpeedMenu";
 import { useVideoProgress } from "@/components/player/useVideoProgress";
-import { SPEEDS } from "@/components/player/constants";
+import { SPEEDS, HOLD_RATE, HOLD_RATE_REASSERT_LIMIT } from "@/components/player/constants";
 import { formatTime } from "@/components/player/format";
 
 type VideoPlayerProps = {
@@ -33,11 +33,14 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const hideTimerRef = useRef<number | null>(null);
   const clickTimerRef = useRef<number | null>(null);
   const holdingFastRef = useRef(false);
+  const holdRateRetryRef = useRef(0);
   const resumedPartRef = useRef<string | null>(null);
   const subtitleRawRef = useRef<Map<string, string>>(new Map());
   const speedBtnRef = useRef<HTMLButtonElement>(null);
 
   const [state, setState] = useState<PlayerState>("loading");
+  // state 的镜像：事件回调里需要在不重建闭包的前提下读到"当前是不是加载/缓冲态"
+  const stateRef = useRef<PlayerState>("loading");
   const [duration, setDuration] = useState(0);
   const [current, setCurrent] = useState(0);
   const [speed, setSpeed] = useState(1);
@@ -115,10 +118,41 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   // 切换 part 由父组件用 key={activePart?.id} 触发 remount，所有内部 state 自然重置，
   // 这里不再需要在 render 期 setState 重置（消除原 if (part.id !== prevPartId) 反模式）。
 
+  // 扫描时 ffprobe 记录的时长，作为元素自身时长的兜底。
+  // 有些容器（fMP4 的空 moov、没有 duration 元素的 WebM 等）会让浏览器报 duration = Infinity，
+  // 而 ffprobe 会读到真实时长；只信元素会把进度条永久钉死。
+  const recordedDuration = typeof part?.durationSeconds === "number" && Number.isFinite(part.durationSeconds) && part.durationSeconds > 0
+    ? part.durationSeconds
+    : 0;
+  // 全站唯一的"总时长"口径：元素报的有限正值优先，否则回落到扫描结果。
+  const effectiveDuration = duration > 0 ? duration : recordedDuration;
+
+  const applyState = useCallback((next: PlayerState) => {
+    stateRef.current = next;
+    setState(next);
+  }, []);
+
+  // 只在元素报出有限正值时才接受：Infinity / NaN 会污染 formatTime、进度条百分比和完成度判定
+  const syncDuration = useCallback((video: HTMLVideoElement) => {
+    const value = video.duration;
+    if (Number.isFinite(value) && value > 0) setDuration(value);
+  }, []);
+
+  // 把"元素的实际播放真相"对账回状态机。
+  // force=false 时只负责把 loading/buffering 落地（时间在推进就说明根本不在缓冲），
+  // force=true 表示由 canplay/playing/seeked 这类"确定就绪"的事件驱动，直接以元素为准。
+  const syncPlaybackState = useCallback((video: HTMLVideoElement, force = false) => {
+    if (video.readyState < 2) return;
+    const currentState = stateRef.current;
+    if (currentState === "error") return;
+    if (!force && currentState !== "loading" && currentState !== "buffering") return;
+    applyState(video.paused ? "paused" : "playing");
+  }, [applyState]);
+
   const { saveProgress, markFinished, latestProgressRef, checkCompletion } = useVideoProgress({
     itemId,
     part,
-    duration,
+    duration: effectiveDuration,
     isLastPart,
     videoRef,
     onEnded
@@ -190,11 +224,11 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     const video = videoRef.current;
     if (!video) return;
     if (video.paused) {
-      void video.play().then(() => setState("playing")).catch(() => setState("paused"));
+      void video.play().then(() => applyState("playing")).catch(() => applyState("paused"));
     } else {
       video.pause();
     }
-  }, []);
+  }, [applyState]);
 
   const toggleFullscreen = useCallback(() => {
     if (!shellRef.current) return;
@@ -208,10 +242,14 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const seekBy = useCallback((delta: number) => {
     const video = videoRef.current;
     if (!video) return;
-    const next = Math.max(0, Math.min(duration || video.duration || 0, video.currentTime + delta));
+    const target = video.currentTime + delta;
+    // 元素时长可能是 NaN/Infinity（未知时长容器），非有限值时不做上界裁剪
+    const rawLimit = effectiveDuration || video.duration;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : target;
+    const next = Math.max(0, Math.min(limit, target));
     video.currentTime = next;
     setCurrent(next);
-  }, [duration]);
+  }, [effectiveDuration]);
 
   const seekTo = useCallback((value: number) => {
     const video = videoRef.current;
@@ -241,8 +279,48 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    video.playbackRate = holdingFast ? 3 : speed;
+    const target = holdingFast ? HOLD_RATE : speed;
+    // defaultPlaybackRate 是元素内部重新加载资源时的回落值，一并对齐：
+    // 任何一次内部 load 都不会把倍速打回 1x
+    video.defaultPlaybackRate = target;
+    if (video.playbackRate !== target) video.playbackRate = target;
   }, [speed, holdingFast]);
+
+  // 部分环境（音频渲染管线不支持时间拉伸、资源内部重载等）会把 playbackRate 悄悄改写回 1x，
+  // 表现就是"长按只快进一瞬间"。按住期间由播放器持有倍速，被改回去就重新压回来。
+  // 次数有上限，避免和浏览器互相改写形成死循环。
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onRateChange = () => {
+      if (!holdingFastRef.current || video.playbackRate === HOLD_RATE) return;
+      if (holdRateRetryRef.current <= 0) {
+        console.warn("[player] 当前环境未接受长按快进倍速，本次长按降级为原速");
+        return;
+      }
+      holdRateRetryRef.current -= 1;
+      video.defaultPlaybackRate = HOLD_RATE;
+      video.playbackRate = HOLD_RATE;
+    };
+    video.addEventListener("ratechange", onRateChange);
+    return () => video.removeEventListener("ratechange", onRateChange);
+  }, []);
+
+  // 缓存命中的视频可能在 React 挂上监听器之前就已经把 loadedmetadata/canplay/playing 发完了，
+  // 只靠事件会把"加载中"永久卡住。这里在挂载后补几轮对账，直到元素真的有了数据。
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      syncDuration(video);
+      // 只收掉"假加载态"：真缓冲由 waiting 事件驱动，且此时时间不会推进
+      if (stateRef.current === "loading") syncPlaybackState(video);
+      if (video.readyState >= 2 || attempts >= 20) window.clearInterval(timer);
+    }, 150);
+    return () => window.clearInterval(timer);
+  }, [syncDuration, syncPlaybackState]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -357,6 +435,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
           showControls();
           holdTimerRef.current = window.setTimeout(() => {
             holdingFastRef.current = true;
+            holdRateRetryRef.current = HOLD_RATE_REASSERT_LIMIT;
             setHoldingFast(true);
             setControlsVisible(false);
           }, 250);
@@ -385,29 +464,39 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
           playsInline
           autoPlay
           preload="auto"
-          onPlay={() => setState("playing")}
-          onPause={() => { setState("paused"); saveProgress(true); }}
-          onWaiting={() => setState("buffering")}
-          onPlaying={() => setState(videoRef.current?.paused ? "paused" : "playing")}
-          onCanPlay={() => setState(videoRef.current?.paused ? "paused" : "playing")}
+          onPlay={() => applyState("playing")}
+          onPause={() => { applyState("paused"); saveProgress(true); }}
+          onWaiting={() => applyState("buffering")}
+          onPlaying={(event) => syncPlaybackState(event.currentTarget, true)}
+          onCanPlay={(event) => syncPlaybackState(event.currentTarget, true)}
+          onCanPlayThrough={(event) => syncPlaybackState(event.currentTarget, true)}
+          // seek 结束后必须重新对账：seeking→waiting 之后若不补一次，转圈会一直挂着
+          onSeeked={(event) => syncPlaybackState(event.currentTarget, true)}
+          onDurationChange={(event) => syncDuration(event.currentTarget)}
+          onLoadedData={(event) => { syncDuration(event.currentTarget); syncPlaybackState(event.currentTarget, true); }}
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
-            const dur = video.duration || 0;
-            setDuration(dur);
-            if (resumedPartRef.current !== partId && resumePosition > 0 && resumePosition < dur - 3) {
+            syncDuration(video);
+            const elementDuration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+            // 元素时长不可用时用扫描时 ffprobe 的结果兜底，否则续播判定会因为 Infinity 而失真
+            const dur = elementDuration || effectiveDuration;
+            if (resumedPartRef.current !== partId && resumePosition > 0 && dur > 0 && resumePosition < dur - 3) {
               video.currentTime = resumePosition;
               setCurrent(resumePosition);
               resumedPartRef.current = partId;
             }
             latestProgressRef.current = { partId, positionSeconds: video.currentTime, durationSeconds: dur };
-            void video.play().then(() => setState("playing")).catch(() => setState("paused"));
+            void video.play().then(() => applyState("playing")).catch(() => applyState("paused"));
           }}
           onTimeUpdate={(event) => {
             const video = event.currentTarget;
             setCurrent(video.currentTime);
+            syncDuration(video);
+            // 时间在推进 = 数据在进来且没被暂停，此时还挂着 loading/buffering 一定是事件漏了
+            if (!video.seeking) syncPlaybackState(video);
             updateSubtitleCues();
-            latestProgressRef.current = { partId, positionSeconds: video.currentTime, durationSeconds: video.duration || duration };
-            checkCompletion(video.currentTime, video.duration);
+            latestProgressRef.current = { partId, positionSeconds: video.currentTime, durationSeconds: effectiveDuration || video.duration || 0 };
+            checkCompletion(video.currentTime, effectiveDuration || video.duration);
           }}
           onVolumeChange={(event) => {
             const v = event.currentTarget;
@@ -419,7 +508,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
             setBuffered(computeBufferedAhead(video));
           }}
           onEnded={markFinished}
-          onError={() => setState("error")}
+          onError={() => applyState("error")}
         />
       </div>
 
@@ -467,7 +556,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         onMouseMove={(event) => event.stopPropagation()}
       >
         <ProgressBar
-          duration={duration}
+          duration={effectiveDuration}
           current={current}
           buffered={buffered}
           spriteUrl={spriteUrl}
@@ -507,7 +596,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
           </div>
 
           <span className="ml-2 min-w-[96px] text-xs tabular-nums text-white/75 select-none">
-            {formatTime(current)} / {formatTime(duration)}
+            {formatTime(current)} / {formatTime(effectiveDuration)}
           </span>
 
           <div className="ml-auto flex items-center gap-0.5">
