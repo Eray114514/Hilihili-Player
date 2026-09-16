@@ -8,7 +8,7 @@
 // 拆分原因：原 api.ts 顶层 import useSWR，一旦被拉进 RSC 构建图就会报错
 // （swr 的 react-server 入口没有 default 导出），导致服务端组件只能内联重复实现取数逻辑。
 
-export { getApiBase, apiUrl, assetUrl, publicApiBase } from "./api-base";
+export { getApiBase, apiUrl, assetUrl } from "./api-base";
 export * from "./api-types";
 export {
   apiFetch,

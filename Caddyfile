@@ -1,0 +1,26 @@
+# Hilihili 同源入口：web 与 api 收拢到一个端口，浏览器全部请求走这里。
+#
+# 路由规则：
+#   /api/*   → api:4141（去掉 /api 前缀；前端所有 fetch/图片/视频地址都带这个前缀）
+#   /media/* → api:4141（HLS 播放列表里的分片 URI 是不带前缀的绝对路径）
+#   其余     → web:3000（Next.js 页面与静态资源）
+#
+# 同源的好处：SSR 输出的相对地址对所有客户端（局域网 IP / 异地组网虚拟 IP）
+# 都正确，且浏览器不再需要任何 CORS 预检。
+#
+# 开发环境不走这里：pnpm dev / dev:safe 由浏览器直连 api 端口（见 lib/api-base.ts）。
+
+:80 {
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy api:4141
+	}
+
+	handle /media/* {
+		reverse_proxy api:4141
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

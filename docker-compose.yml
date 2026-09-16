@@ -52,9 +52,24 @@ services:
     image: ghcr.io/eray114514/hilihili-player:web
     environment:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://api:4141}
-    ports:
-      - "3001:3000"
     depends_on:
+      - api
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # 同源入口：把 web 页面与 api 收拢到一个端口（3001）。
+  # 前端生产构建的 API 地址是相对前缀 /api（见 apps/web/src/lib/api-base.ts），
+  # 由这里按路径分流，对任何客户端（局域网 / 异地组网）都正确且无跨域。
+  # Caddyfile 同时直达 /media/*（HLS 播放列表里的分片 URI 不带 /api 前缀）。
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "3001:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - web
       - api
     networks:
       - backend
@@ -86,7 +101,7 @@ services:
       - .deploy.env
     environment:
       PORT: 8787
-      DEPLOY_PROJECTS: '[{"id":"hilihili","name":"Hilihili Player","directory":"/workspace","project":"hilihili","services":["api","worker","web"]}]'
+      DEPLOY_PROJECTS: '[{"id":"hilihili","name":"Hilihili Player","directory":"/workspace","project":"hilihili","services":["api","worker","web","caddy"]}]'
     ports:
       - "8787:8787"
     volumes:

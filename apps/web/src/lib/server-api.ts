@@ -1,21 +1,11 @@
 // 仅限 Server Component / Route Handler 使用（不要从 "use client" 组件 import）：
 // 这里依赖 next/headers，在客户端会构建失败。
 //
-// 服务端取数用容器内地址（快、不经过组网隧道），但输出到 HTML 里的图片/字幕 URL
-// 必须用请求的 host 推导，否则浏览器拿到 http://api:4141 这类内网地址会全部 404。
-
-import { headers } from "next/headers";
-import { publicApiBase } from "./api-base";
+// 服务端取数据走容器内网直连（快、不经反代），与浏览器用的同源相对地址（/api）是两条路。
 
 /** 服务端访问 API 的基地址：Docker 部署下是 compose 服务名 */
 export function serverBase() {
   return process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4141";
-}
-
-/** 当前请求对应的、浏览器可达的 API 基地址（组网场景下就是那台虚拟 IP） */
-export async function requestPublicBase() {
-  const headerList = await headers();
-  return publicApiBase(headerList.get("host"));
 }
 
 export type ServerGetOptions = {
@@ -46,9 +36,20 @@ export async function serverFetch<T>(path: string, options: ServerGetOptions = {
         : { cache: "no-store" as const })
     });
     if (response.status === 404) return { status: "missing" };
-    if (!response.ok) return { status: "error" };
+    if (!response.ok) {
+      // 静默失败会让「页面只剩骨架」无从排查，至少留下上游状态码
+      console.error(`[server-api] ${path} -> upstream ${response.status}`);
+      return { status: "error" };
+    }
     return { status: "ok", data: (await response.json()) as T };
-  } catch {
+  } catch (error) {
+    // Next 用异常做控制流：静态预渲染期间带 no-store 的 fetch 会抛 DynamicServerError，
+    // 预期它向上传播把路由标记为动态。绝对不能在这里吞掉，否则空数据会被固化成静态页。
+    const digest = (error as { digest?: string }).digest;
+    if (digest === "DYNAMIC_SERVER_USAGE" || (error instanceof Error && error.message.includes("Dynamic server usage"))) {
+      throw error;
+    }
+    console.error(`[server-api] ${path} -> fetch failed:`, error);
     return { status: "error" };
   }
 }
