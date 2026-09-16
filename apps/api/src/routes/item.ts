@@ -3,6 +3,7 @@ import { addManualTagToItem, listItemTags, removeTagFromItem } from "@hilihili/m
 import { getRecommendedFeed } from "@hilihili/recommendation";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../lib/db.js";
+import { CACHE_POLICY_PRIVATE, sendJson } from "../lib/http-cache.js";
 import { recordRecommendationSignals } from "../lib/signals.js";
 import {
   commentSchema,
@@ -184,7 +185,7 @@ export async function itemRoutes(app: ZodFastifyInstance) {
       .all()
       .map((row) => row.folderId);
 
-    return { item, parts: partsWithSubtitles, images: imageAssets, tags: tagDetails.map((tag) => tag.name), tagDetails, comments: commentsRows, related, favoritedFolderIds };
+    return sendJson(request, reply, { item, parts: partsWithSubtitles, images: imageAssets, tags: tagDetails.map((tag) => tag.name), tagDetails, comments: commentsRows, related, favoritedFolderIds }, CACHE_POLICY_PRIVATE);
   });
 
   app.post("/items/:id/tags", { schema: { params: idParamSchema, body: tagSchema } }, async (request, reply) => {

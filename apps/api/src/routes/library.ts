@@ -5,10 +5,11 @@ import { enqueueScan } from "@hilihili/media";
 import { desc, eq } from "drizzle-orm";
 import { db } from "../lib/db.js";
 import { isPathAllowed } from "../lib/fs-roots.js";
+import { CACHE_POLICY_PRIVATE, sendJson } from "../lib/http-cache.js";
 import { addLibrarySchema, scanRunSchema, type ZodFastifyInstance } from "../lib/types.js";
 
 export async function libraryRoutes(app: ZodFastifyInstance) {
-  app.get("/libraries", async () => ({
+  app.get("/libraries", async (request, reply) => sendJson(request, reply, {
     // enabled 字段在 schema 中是 boolean mode，JSON 序列化为 true/false（原裸 SQL 返回 0/1）
     libraries: db.select({
       id: libraries.id,
@@ -20,7 +21,7 @@ export async function libraryRoutes(app: ZodFastifyInstance) {
       .from(libraries)
       .orderBy(desc(libraries.createdAt))
       .all()
-  }));
+  }, CACHE_POLICY_PRIVATE));
 
   app.post("/libraries", { schema: { body: addLibrarySchema } }, async (request, reply) => {
     const body = request.body;
@@ -52,7 +53,7 @@ export async function libraryRoutes(app: ZodFastifyInstance) {
     return reply.code(202).send({ scanRunId, status: "queued" });
   });
 
-  app.get("/scan/runs", async () => ({
+  app.get("/scan/runs", async (request, reply) => sendJson(request, reply, {
     runs: db.select({
       id: scanRuns.id,
       libraryId: scanRuns.libraryId,
@@ -71,7 +72,7 @@ export async function libraryRoutes(app: ZodFastifyInstance) {
       .orderBy(desc(scanRuns.startedAt))
       .limit(20)
       .all()
-  }));
+  }, CACHE_POLICY_PRIVATE));
 
   app.get<{ Params: { id: string } }>("/scan/runs/:id", async (request, reply) => {
     const run = db.select({
@@ -91,6 +92,9 @@ export async function libraryRoutes(app: ZodFastifyInstance) {
       .from(scanRuns)
       .where(eq(scanRuns.id, request.params.id))
       .get();
-    return run ?? reply.code(404).send({ error: "Scan run not found" });
+    if (!run) {
+      return reply.code(404).send({ error: "Scan run not found" });
+    }
+    return sendJson(request, reply, run, CACHE_POLICY_PRIVATE);
   });
 }

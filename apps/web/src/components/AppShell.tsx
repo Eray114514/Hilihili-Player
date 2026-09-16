@@ -197,7 +197,9 @@ function HeaderSearchFallback() {
 function MessageButton() {
   // SWR 的 refreshInterval 替代 setInterval，revalidateOnFocus 替代 focus 事件监听。
   const { data } = useApi<{ unreadCount: number }>("/me/messages/unread-count", {
-    refreshInterval: 30000,
+    // 60s 一次：接口带 ETag，未变化时只回 304（一个 RTT 的极小报文），
+    // 在带宽受限的异地组网下比 30s 轮询省一半往返。
+    refreshInterval: 60000,
     revalidateOnFocus: true
   });
   const unread = data?.unreadCount ?? 0;

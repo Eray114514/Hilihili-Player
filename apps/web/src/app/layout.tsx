@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
-import type { Category } from "@/lib/api";
+import { requestPublicBase } from "@/lib/server-api";
+import { setServerRenderedApiBase } from "@/lib/api-base";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -31,30 +32,24 @@ export const metadata: Metadata = {
   }
 };
 
-// 服务端预取 categories：5 分钟 ISR 缓存，失败时返回 null（首屏回退到客户端 useApi 兜底）。
-// 注意：不能 value-import @/lib/api —— 该模块 import 了客户端 useSWR，而 swr 的 react-server 入口
-// 没有 default 导出，把 lib/api.ts 拉进 RSC 构建图会报错。故这里内联服务端 API base 解析
-// （与 getApiBase 的服务端分支一致），Category 仅用 import type（类型导入被擦除，不进运行时图）。
-async function fetchCategories(): Promise<{ categories: Category[] } | null> {
-  try {
-    const base = process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4141";
-    const res = await fetch(`${base}/categories`, { next: { revalidate: 300 } });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
+// 这里刻意不做任何数据获取。
+//
+// 原来 RootLayout 会 await 一次 /categories（只为了给首页的分类栏预热 SWR fallback），
+// 结果是每个页面的 HTML 首字节都被一次 API 往返挡住——在异地组网的高 RTT 链路下
+// 这是实打实的首屏延迟。现在需要的页面各自在 Server Component 里取，
+// 并用 Suspense 包住，页面骨架先出、数据后到。
+//
+// 唯一要做的是把「浏览器可达的 API 基地址」告诉 assetUrl：
+// 否则 SSR 出来的封面地址会是容器内网地址（http://api:4141），首屏全是裂图。
 export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const categoriesData = await fetchCategories();
+  setServerRenderedApiBase(await requestPublicBase());
   return (
     <html lang="zh-CN" className={`${geistSans.variable} ${geistMono.variable} h-full`}>
-      <body className="min-h-full antialiased"><Providers fallback={categoriesData ? { "/categories": categoriesData } : undefined}>{children}</Providers></body>
+      <body className="min-h-full antialiased"><Providers>{children}</Providers></body>
     </html>
   );
 }

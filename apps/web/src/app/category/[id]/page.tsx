@@ -1,29 +1,18 @@
-"use client";
+import type { FeedResponse } from "@/lib/api";
+import { serverGet } from "@/lib/server-api";
+import { CategoryClient } from "./_components/CategoryClient";
 
-import { useParams } from "next/navigation";
-import { AppShell } from "@/components/AppShell";
-import { GridSkeleton } from "@/components/GridSkeleton";
-import { VideoGrid } from "@/components/VideoCard";
-import { useApi, type FeedResponse } from "@/lib/api";
+/**
+ * 分区页改成 Server Component 取数：封面 URL 随 HTML 一起到达，图片立即开始下载。
+ */
+export default async function CategoryPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  // key 必须与客户端 useApi 的 key 完全一致（原来就是不带 query 的写法）
+  const key = `/feeds/category/${id}`;
+  const feed = await serverGet<FeedResponse>(key);
 
-export default function CategoryPage() {
-  const params = useParams<{ id: string }>();
-  // Keyed remount on id change resets SWR 本地状态（isLoading=true）。
-  return (
-    <AppShell>
-      <div className="mb-7">
-        <h1 className="text-2xl font-semibold md:text-3xl">分区内容</h1>
-        <p className="mt-2 text-sm text-white/50">无限下滑会继续接同一个推荐接口，当前先展示第一屏。</p>
-      </div>
-      <CategoryContent key={params.id} id={params.id} />
-    </AppShell>
-  );
-}
+  const fallback: Record<string, unknown> = {};
+  if (feed) fallback[key] = feed;
 
-function CategoryContent({ id }: { id: string }) {
-  const { data, error, isLoading } = useApi<FeedResponse>(`/feeds/category/${id}`);
-
-  if (isLoading || error) return <GridSkeleton />;
-  const items = data?.items ?? [];
-  return <div className="animate-fade-in"><VideoGrid items={items} /></div>;
+  return <CategoryClient id={id} fallback={fallback} />;
 }

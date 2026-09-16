@@ -1,5 +1,13 @@
 import { getSqlite } from "@hilihili/db";
-import { enqueueScan, processNextScanRun } from "@hilihili/media";
+import {
+  detectHlsEncoder,
+  enqueueScan,
+  enqueueWarmupTranscodes,
+  isScanBusy,
+  processNextScanRun,
+  processNextTranscodeTask,
+  recoverInterruptedTranscodeTasks
+} from "@hilihili/media";
 import { createLogger } from "@hilihili/shared/log";
 import { watch, type FSWatcher } from "chokidar";
 
@@ -13,6 +21,12 @@ let changeTimer: NodeJS.Timeout | null = null;
 let firstChangeAt: number | null = null;
 const DEBOUNCE_MS = 1500;
 const MAX_DEBOUNCE_MS = 10000;
+// 转码并发默认 1：扫不到扫描机会时再考虑并行，避免把 NAS 的 CPU 吃干净
+const TRANSCODE_CONCURRENCY = Math.max(1, Math.min(2, Number(process.env.HILI_TRANSCODE_CONCURRENCY ?? 1)));
+// 收到退出信号后，等在跑的扫描/转码收尾的上限
+const SHUTDOWN_GRACE_MS = 10000;
+
+const controller = new AbortController();
 
 getSqlite();
 
@@ -24,6 +38,8 @@ for (const run of stuckRuns) {
     .run("Interrupted by worker restart", new Date().toISOString(), run.id);
   log.info("recovered stuck scan run", { runId: run.id });
 }
+// 转码任务同理：running 放回 queued，并清掉半成品临时目录
+recoverInterruptedTranscodeTasks();
 
 let processing = false;
 
@@ -41,6 +57,24 @@ async function drainQueue() {
   } finally {
     processing = false;
     if (changedLibraries.size > 0) scheduleChangedScans();
+  }
+}
+
+let activeTranscodeLoops = 0;
+
+async function drainTranscodeQueue() {
+  if (activeTranscodeLoops >= TRANSCODE_CONCURRENCY) return;
+  // 扫描期间让路：转码要吃满 CPU，而缩略图阶段也要跑 ffmpeg，同时跑会互相饿死
+  if (processing || isScanBusy()) return;
+  activeTranscodeLoops += 1;
+  try {
+    while (!controller.signal.aborted) {
+      if (!(await processNextTranscodeTask(controller.signal))) break;
+    }
+  } catch (error) {
+    log.error("transcode queue failed", { error: error instanceof Error ? error.message : String(error) });
+  } finally {
+    activeTranscodeLoops -= 1;
   }
 }
 
@@ -100,21 +134,34 @@ function refreshWatchers() {
 enqueueScan();
 void drainQueue();
 refreshWatchers();
+// 启动时补一小批预热转码，让「最近看过的内容」在用户下一次打开前就绪
+enqueueWarmupTranscodes();
+void drainTranscodeQueue();
 setInterval(() => void drainQueue(), 10000);
+setInterval(() => void drainTranscodeQueue(), 10000);
 setInterval(() => enqueueScan(), intervalMs);
 setInterval(refreshWatchers, 30000);
+// 探测一次转码器能力（QSV / libx264），把结果提前打进日志，方便排查硬编是否可用
+void detectHlsEncoder()
+  .then((encoder) => log.info("transcode encoder ready", { encoder }))
+  .catch((error) => log.warn("transcode encoder probe failed", { error: error instanceof Error ? error.message : String(error) }));
 
 let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info("shutting down", { signal });
+  // 通知在跑的转码中断：ffmpeg 会收到 SIGTERM，任务回队列等下次启动继续
+  controller.abort();
   for (const current of watchers.values()) {
     current.watcher.close().catch(() => {});
   }
   watchers.clear();
-  // 给当前 drainQueue 一个短超时完成
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+  // 给当前 drainQueue / 转码收尾一个上限，而不是写死等 2 秒就退出
+  const deadline = Date.now() + SHUTDOWN_GRACE_MS;
+  while ((processing || activeTranscodeLoops > 0) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
   process.exit(0);
 }
 process.on("SIGTERM", () => void shutdown("SIGTERM"));

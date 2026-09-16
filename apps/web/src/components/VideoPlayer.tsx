@@ -3,12 +3,14 @@
 import { AlertTriangle, FastForward, LoaderCircle, Maximize, Minimize, Pause, Play, Rewind, Subtitles, Volume2, VolumeX } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { apiUrl, assetUrl, type PartDetail } from "@/lib/api";
+import { assetUrl, type PartDetail } from "@/lib/api";
 import { fadeIn, slideDown } from "@/lib/motion";
 import { decodeSubtitle, findActiveCue, parseSubtitle, type SubtitleCue } from "@/lib/subtitles";
 import { ProgressBar } from "@/components/player/ProgressBar";
 import { SubtitleOverlay } from "@/components/player/SubtitleOverlay";
 import { SpeedMenu } from "@/components/player/SpeedMenu";
+import { QualityMenu } from "@/components/player/QualityMenu";
+import { useHlsSource } from "@/components/player/useHlsSource";
 import { useVideoProgress } from "@/components/player/useVideoProgress";
 import { SPEEDS, HOLD_RATE, HOLD_RATE_REASSERT_LIMIT } from "@/components/player/constants";
 import { formatTime } from "@/components/player/format";
@@ -35,7 +37,8 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const holdingFastRef = useRef(false);
   const holdRateRetryRef = useRef(0);
   const resumedPartRef = useRef<string | null>(null);
-  const subtitleRawRef = useRef<Map<string, string>>(new Map());
+  // 已解析字幕的缓存（按分P维度）。用于避免切换字幕语言时重复下载同一批字幕文件。
+  const subtitleCacheRef = useRef<{ partId: string; cues: Map<string, SubtitleCue[]> }>({ partId: "", cues: new Map() });
   const speedBtnRef = useRef<HTMLButtonElement>(null);
 
   const [state, setState] = useState<PlayerState>("loading");
@@ -51,6 +54,7 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
   const [buffered, setBuffered] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
+  const [qualityMenuOpen, setQualityMenuOpen] = useState(false);
   const [loadedSpriteUrl, setLoadedSpriteUrl] = useState<string | null>(null);
   const [failedSpriteUrl, setFailedSpriteUrl] = useState<string | null>(null);
 
@@ -158,6 +162,40 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     onEnded
   });
 
+  // 所有 hook 必须在下面的 `if (!part) return` 之前调用，所以这里用可空 id
+  const activePartId = part?.id ?? "";
+
+  /**
+   * 应用续播位置。
+   *
+   * 抽成函数是因为「时长何时可信」有三种情况：
+   * 直连 MP4 在 loadedmetadata 就有完整时长；HLS 下 loadedmetadata 可能早于真实时长，
+   * 要等 hls.js 的 LEVEL_LOADED。三处都调用同一个函数，靠 resumedPartRef 保证只生效一次。
+   */
+  const tryApplyResume = useCallback((video: HTMLVideoElement, knownDuration = 0) => {
+    if (!activePartId || resumedPartRef.current === activePartId) return;
+    const elementDuration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    const dur = knownDuration > 0 ? knownDuration : elementDuration || effectiveDuration;
+    if (resumePosition <= 0 || dur <= 0 || resumePosition >= dur - 3) return;
+    resumedPartRef.current = activePartId;
+    video.currentTime = resumePosition;
+    setCurrent(resumePosition);
+    latestProgressRef.current = { partId: activePartId, positionSeconds: resumePosition, durationSeconds: dur };
+  }, [activePartId, effectiveDuration, latestProgressRef, resumePosition]);
+
+  // 播放源决策：优先 HLS 切片流，未就绪先播原画直连。这个 hook 完全接管 <video> 的 src。
+  const hlsSource = useHlsSource({
+    partId: activePartId,
+    enabled: Boolean(part),
+    videoRef,
+    onDurationReady: (value) => {
+      const video = videoRef.current;
+      if (!video) return;
+      setDuration(value);
+      tryApplyResume(video, value);
+    }
+  });
+
   const updateSubtitleCues = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -172,29 +210,34 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     if (!part || part.subtitles.length === 0) return;
 
     let ignore = false;
-    let timer: number | null = null;
-    subtitleRawRef.current = new Map();
+    // 换分P 时废弃上一集缓存的字幕
+    if (subtitleCacheRef.current.partId !== part.id) {
+      subtitleCacheRef.current = { partId: part.id, cues: new Map() };
+    }
 
     const load = async () => {
-      const map = new Map<string, SubtitleCue[]>();
-      const rawMap = new Map<string, string>();
-      let changed = false;
-      for (const track of part.subtitles) {
+      // 只下载还没解析过的轨道，并并发发起（原来是无条件整批重下、且 for 循环里串行 await，
+      // 还额外挂了 60s 轮询——字幕文件在播放期间不会变，那些请求纯属浪费带宽）
+      const cached = subtitleCacheRef.current.cues;
+      const map = new Map<string, SubtitleCue[]>(cached);
+      const missing = part.subtitles.filter((track) => !map.has(track.id));
+      const loaded = await Promise.all(missing.map(async (track) => {
         const base = assetUrl(track.url);
-        if (!base) continue;
+        if (!base) return null;
         try {
-          const response = await fetch(base);
-          if (!response.ok) continue;
-          const text = decodeSubtitle(await response.arrayBuffer());
-          rawMap.set(track.id, text);
-          if (subtitleRawRef.current.get(track.id) !== text) changed = true;
-          map.set(track.id, parseSubtitle(text));
+          const response = await fetch(base, { signal: AbortSignal.timeout(15000) });
+          if (!response.ok) return null;
+          return { id: track.id, cues: parseSubtitle(decodeSubtitle(await response.arrayBuffer())) };
         } catch {
           console.warn(`[player] failed to load subtitle: ${base}`);
+          return null;
         }
+      }));
+      for (const entry of loaded) {
+        if (entry) map.set(entry.id, entry.cues);
       }
-      if (ignore || !changed) return;
-      subtitleRawRef.current = rawMap;
+      if (ignore) return;
+      subtitleCacheRef.current = { partId: part.id, cues: map };
       setSubtitleTracks(map);
       const video = videoRef.current;
       if (video) {
@@ -205,10 +248,8 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
       }
     };
     void load();
-    timer = window.setInterval(load, 60000);
     return () => {
       ignore = true;
-      if (timer) window.clearInterval(timer);
     };
   }, [part, primarySubtitle, secondarySubtitle]);
 
@@ -216,9 +257,9 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
     setControlsVisible(true);
     if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
     hideTimerRef.current = window.setTimeout(() => {
-      if (!speedMenuOpen && !subtitleMenuOpen) setControlsVisible(false);
+      if (!speedMenuOpen && !subtitleMenuOpen && !qualityMenuOpen) setControlsVisible(false);
     }, 2600);
-  }, [speedMenuOpen, subtitleMenuOpen]);
+  }, [speedMenuOpen, subtitleMenuOpen, qualityMenuOpen]);
 
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
@@ -459,11 +500,13 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         <video
           key={partId}
           ref={videoRef}
-          src={apiUrl(`/media/parts/${part.id}/stream`)}
+          // 不设 src：地址完全由 useHlsSource 接管（直连 / hls.js / Safari 原生 HLS 三种落源方式）
           className="h-full w-full select-none object-contain"
           playsInline
           autoPlay
-          preload="auto"
+          // 不用 auto：远端带宽受限时，auto 会让浏览器把预读窗口拉到很大，
+          // 把同一时刻的封面/接口请求全挤掉。metadata 足够起播对账，后续按播放进度取数。
+          preload="metadata"
           onPlay={() => applyState("playing")}
           onPause={() => { applyState("paused"); saveProgress(true); }}
           onWaiting={() => applyState("buffering")}
@@ -472,20 +515,18 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
           onCanPlayThrough={(event) => syncPlaybackState(event.currentTarget, true)}
           // seek 结束后必须重新对账：seeking→waiting 之后若不补一次，转圈会一直挂着
           onSeeked={(event) => syncPlaybackState(event.currentTarget, true)}
-          onDurationChange={(event) => syncDuration(event.currentTarget)}
+          onDurationChange={(event) => {
+            syncDuration(event.currentTarget);
+            // HLS 下时长往往是 durationchange 才变准，续播不能只挂在 loadedmetadata 上
+            tryApplyResume(event.currentTarget);
+          }}
           onLoadedData={(event) => { syncDuration(event.currentTarget); syncPlaybackState(event.currentTarget, true); }}
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
             syncDuration(video);
-            const elementDuration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
-            // 元素时长不可用时用扫描时 ffprobe 的结果兜底，否则续播判定会因为 Infinity 而失真
-            const dur = elementDuration || effectiveDuration;
-            if (resumedPartRef.current !== partId && resumePosition > 0 && dur > 0 && resumePosition < dur - 3) {
-              video.currentTime = resumePosition;
-              setCurrent(resumePosition);
-              resumedPartRef.current = partId;
-            }
-            latestProgressRef.current = { partId, positionSeconds: video.currentTime, durationSeconds: dur };
+            // 续播位置由 tryApplyResume 统一处理（它会判断时长是否已经可信）
+            tryApplyResume(video);
+            latestProgressRef.current = { partId, positionSeconds: video.currentTime, durationSeconds: effectiveDuration || video.duration || 0 };
             void video.play().then(() => applyState("playing")).catch(() => applyState("paused"));
           }}
           onTimeUpdate={(event) => {
@@ -534,6 +575,17 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
         </AnimatePresence>
       )}
       {holdingFast ? <div className="pointer-events-none absolute left-1/2 top-5 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-sm font-semibold">3× 快进中</div> : null}
+      {/* 远程场景：切片流还在生成时，如实告诉用户当前放的是原画直连、离就绪还有多远 */}
+      {hlsSource.preparation === "preparing" ? (
+        <div className="pointer-events-none absolute right-3 top-3 rounded-md bg-black/68 px-2.5 py-1 text-[11px] text-white/82 backdrop-blur-sm">
+          正在准备切片版 {Math.round(hlsSource.progress * 100)}% · 当前为原画直连
+        </div>
+      ) : null}
+      {hlsSource.error?.includes("降级") ? (
+        <div className="pointer-events-none absolute right-3 top-3 rounded-md bg-amber-500/85 px-2.5 py-1 text-[11px] font-medium text-black backdrop-blur-sm">
+          {hlsSource.error}
+        </div>
+      ) : null}
       {state === "paused" ? (
         <button className="absolute left-1/2 top-1/2 grid h-16 w-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-white/92 text-black shadow-xl transition hover:scale-105" onClick={togglePlay} aria-label="播放">
           <Play className="ml-1" size={28} fill="currentColor" />
@@ -666,6 +718,14 @@ export function VideoPlayer({ itemId, part, resumePosition = 0, isLastPart = fal
               onOpenChange={setSpeedMenuOpen}
               buttonRef={speedBtnRef}
               onWheelChange={cycleSpeed}
+            />
+
+            <QualityMenu
+              levels={hlsSource.levels}
+              level={hlsSource.level}
+              onSelect={hlsSource.selectLevel}
+              open={qualityMenuOpen}
+              onOpenChange={(open) => { setQualityMenuOpen(open); if (open) showControls(); }}
             />
 
             <button className="player-btn" onClick={toggleFullscreen} aria-label={isFullscreen ? "退出全屏 (F)" : "全屏 (F)"}>

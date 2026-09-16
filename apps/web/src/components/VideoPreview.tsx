@@ -42,6 +42,9 @@ export function VideoPreview({ previewPartId, posterUrl, alt, sizes, priority = 
   const startPreview = useCallback(() => {
     if (!previewPartId || failed || activeRef.current) return;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    // 触屏设备没有真实 hover，点按会合成 mouseenter/mousemove 事件。
+    // 不挡住的话，移动端点一下卡片就会起一条原码率预览流（紧接着才跳转播放页）。
+    if (window.matchMedia("(hover: none)").matches) return;
     const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
     if (connection?.saveData) return;
     activeRef.current = true;
@@ -81,16 +84,10 @@ export function VideoPreview({ previewPartId, posterUrl, alt, sizes, priority = 
     };
   }, [startPreview, stopPreview]);
 
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || !previewPartId || !window.matchMedia("(hover: none), (pointer: coarse)").matches) return;
-    const observer = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting && entry.intersectionRatio >= 0.72) startPreview();
-      else stopPreview();
-    }, { threshold: [0, 0.72, 1] });
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, [previewPartId, startPreview, stopPreview]);
+  // 触屏设备上不做「滚到就自动预览」。
+  // 原因：预览拉的是 /media/parts/:id/stream 原码率流，列表滚动时会同时起几十条，
+  // 在异地组网这种带宽受限的链路上会直接把整页的图片/接口请求饿死。
+  // 桌面端仍保留 hover/focus 预览（单条、有明确意图）。
 
   const previewing = active && !failed;
   return (

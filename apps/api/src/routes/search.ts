@@ -5,14 +5,15 @@ import type { FeedItem } from "@hilihili/shared";
 import { eq, sql } from "drizzle-orm";
 import { db } from "../lib/db.js";
 import { clampLimit } from "../lib/clamp.js";
+import { CACHE_POLICY_PRIVATE, sendJson } from "../lib/http-cache.js";
 
 export async function searchRoutes(app: FastifyInstance) {
-  app.get<{ Querystring: { q?: string; limit?: string; offset?: string } }>("/search", async (request) => {
+  app.get<{ Querystring: { q?: string; limit?: string; offset?: string } }>("/search", async (request, reply) => {
     const query = (request.query.q?.trim() ?? "").slice(0, 200);
     const requestedOffset = Number(request.query.offset ?? 0);
     const limit = clampLimit(Number(request.query.limit ?? 36), 36);
     const offset = Number.isFinite(requestedOffset) ? Math.max(requestedOffset, 0) : 0;
-    if (!query) return { query, items: [] as FeedItem[], total: 0, hasMore: false };
+    if (!query) return sendJson(request, reply, { query, items: [] as FeedItem[], total: 0, hasMore: false }, CACHE_POLICY_PRIVATE);
 
     const pattern = `%${query}%`;
     const prefixPattern = `${query}%`;
@@ -72,6 +73,6 @@ export async function searchRoutes(app: FastifyInstance) {
         request.log.error({ err: error }, "Failed to record search history");
       }
     }
-    return { query, items, total, hasMore: offset + items.length < total };
+    return sendJson(request, reply, { query, items, total, hasMore: offset + items.length < total }, CACHE_POLICY_PRIVATE);
   });
 }

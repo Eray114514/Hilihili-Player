@@ -27,6 +27,13 @@ export function getSqlite() {
     sqlite.pragma("journal_mode = WAL");
     sqlite.pragma("foreign_keys = ON");
     sqlite.pragma("busy_timeout = 5000");
+    // WAL 下 NORMAL 已能保证崩溃一致性（只有断电可能丢最后几个事务），
+    // 换来的是每次写入不再强制 fsync —— 播放进度那种高频小写入收益明显。
+    sqlite.pragma("synchronous = NORMAL");
+    // 负数 = KiB。16MB 页缓存 + 256MB 只读 mmap，减少大表扫描时的磁盘读。
+    sqlite.pragma("cache_size = -16000");
+    sqlite.pragma("mmap_size = 268435456");
+    sqlite.pragma("temp_store = MEMORY");
     applyMigrations(sqlite);
   }
 
@@ -406,6 +413,72 @@ function migrationScanRunFailureCounts(db: Database.Database) {
   ensureColumn(db, "scan_runs", "items_skipped", "INTEGER NOT NULL DEFAULT 0");
 }
 
+function migrationAddHlsTranscode(db: Database.Database) {
+  // HLS 远程播放产物。列名与 packages/db/src/schema.ts 的 mediaParts 对应。
+  // 沿用 ensureColumn 的幂等约定：老库此刻没有这些列，新库的基线 CREATE TABLE 也不声明它们。
+  ensureColumn(db, "media_parts", "hls_path", "TEXT");
+  ensureColumn(db, "media_parts", "hls_fingerprint", "TEXT");
+  ensureColumn(db, "media_parts", "hls_status", "TEXT NOT NULL DEFAULT 'none'");
+  ensureColumn(db, "media_parts", "hls_error", "TEXT");
+  ensureColumn(db, "media_parts", "hls_ladder", "TEXT");
+  ensureColumn(db, "media_parts", "hls_updated_at", "TEXT");
+  ensureColumn(db, "media_parts", "hls_attempts", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "media_parts", "last_played_at", "TEXT");
+  ensureColumn(db, "media_parts", "play_count", "INTEGER NOT NULL DEFAULT 0");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS transcode_tasks (
+      id TEXT PRIMARY KEY,
+      part_id TEXT NOT NULL REFERENCES media_parts(id) ON DELETE CASCADE,
+      fingerprint TEXT NOT NULL,
+      profile TEXT NOT NULL,
+      status TEXT NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 0,
+      progress REAL NOT NULL DEFAULT 0,
+      encoder TEXT,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      error TEXT,
+      queued_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      next_attempt_at TEXT,
+      bytes_out INTEGER,
+      duration_ms INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS transcode_tasks_part_profile_idx ON transcode_tasks(part_id, profile);
+    CREATE INDEX IF NOT EXISTS transcode_tasks_queue_idx ON transcode_tasks(status, priority, queued_at);
+    CREATE INDEX IF NOT EXISTS transcode_tasks_fingerprint_idx ON transcode_tasks(fingerprint);
+  `);
+
+  // 封面基础分辨率由 640x360 提到 1280x720（仅当源视频够宽时，见 packages/media 的 generateThumbnail）。
+  // 已生成的旧封面不会自动失效，这里显式作废一次让下次扫描按新尺寸重生成；
+  // 旧文件由 media-cache 的孤儿清理回收。只动「没有自带 cover.jpg」的条目——
+  // 自带封面的条目走原图路径，本来就不生成封面，改了状态反而会卡在 pending。
+  db.exec(`
+    UPDATE media_items
+    SET generated_cover_path = NULL, thumbnail_status = 'pending'
+    WHERE generated_cover_path IS NOT NULL AND cover_path IS NULL;
+  `);
+}
+
+function migrationAddQueryIndexes(db: Database.Database) {
+  // 补齐热路径缺失的索引。这些都是「全表扫 + 过滤」的典型场景：
+  //   - interactions 只有 (target_type, target_id)，按 kind/时间筛要扫全表
+  //   - media_images 按 (item_id, sort_index) 取图集首图，只有 item_id 单列索引
+  //   - media_items 的 hidden/kind 过滤与首见时间排序都在信息流主查询里
+  //   - watch_progress 按 finished 过滤「继续观看」
+  // 全部 IF NOT EXISTS，老库新库都安全。
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS interactions_kind_created_idx ON interactions(target_type, kind, created_at DESC);
+    CREATE INDEX IF NOT EXISTS media_images_item_sort_idx ON media_images(item_id, sort_index);
+    CREATE INDEX IF NOT EXISTS media_items_hidden_kind_idx ON media_items(hidden, kind);
+    CREATE INDEX IF NOT EXISTS media_items_seen_idx ON media_items(first_seen_at DESC);
+    CREATE INDEX IF NOT EXISTS watch_progress_finished_idx ON watch_progress(finished, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS media_parts_hls_status_idx ON media_parts(hls_status);
+  `);
+}
+
 const migrations: Migration[] = [
   { version: 0, name: "baseline", fn: migrationBaseline },
   { version: 1, name: "watch_progress_repair", fn: migrationWatchProgressRepair },
@@ -414,6 +487,8 @@ const migrations: Migration[] = [
   { version: 4, name: "search_history_timestamp", fn: migrationSearchHistoryTimestamp },
   { version: 5, name: "add_scan_tracking", fn: migrationAddScanTracking },
   { version: 6, name: "scan_run_failure_counts", fn: migrationScanRunFailureCounts },
+  { version: 7, name: "add_hls_transcode", fn: migrationAddHlsTranscode },
+  { version: 8, name: "add_query_indexes", fn: migrationAddQueryIndexes },
 ];
 
 function ensureSchemaMigrationsTable(db: Database.Database) {

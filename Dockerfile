@@ -31,8 +31,16 @@ ENV NODE_ENV=production
 ENV HILI_FFMPEG_PATH=/usr/bin/ffmpeg
 ENV HILI_FFPROBE_PATH=/usr/bin/ffprobe
 WORKDIR /app
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+# ffmpeg 用于缩略图/雪碧图/转码；Intel 媒体驱动 + oneVPL/MFX 运行时用于 QSV 硬件编码
+# （需要非自由组件，故先把 non-free 加进源）。容器还需映射 /dev/dri，见 docker-compose.yml。
+# 拿不到 /dev/dri 或驱动时 packages/media 会自动回退 libx264，不会因此不可用。
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's/^Components: .*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources; \
+    else \
+      sed -i 's/ main$/ main contrib non-free non-free-firmware/' /etc/apt/sources.list; \
+    fi \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg intel-media-va-driver-non-free libmfx1 libvpl2 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=backend-deploy /prod/backend ./
 # 以 root 运行：named volume 挂载的 /data 可能含旧镜像以 root 创建的

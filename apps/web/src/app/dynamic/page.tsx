@@ -1,54 +1,26 @@
-"use client";
+import type { FeedResponse } from "@/lib/api";
+import { serverGet } from "@/lib/server-api";
+import { DynamicClient } from "./_components/DynamicClient";
 
-import { RefreshCw } from "lucide-react";
-import { useState } from "react";
-import type { FeedItem } from "@hilihili/shared";
-import { AppShell, EmptyState } from "@/components/AppShell";
-import { DynamicFeedCard } from "@/components/DynamicFeedCard";
-import { useApi, type FeedResponse } from "@/lib/api";
+const DYNAMIC_LIMIT = 80;
+const DYNAMIC_SORT = "newest";
+const DYNAMIC_KIND = "all";
+// 默认 seed 是固定值（原客户端 useState 的初值），这里在服务端确定后下发给客户端，
+// 保证 SSR 出的 fallback key 与客户端 useApi 的 key 完全一致。
+const DYNAMIC_SEED = "dynamic";
 
-type Sort = "newest" | "oldest" | "random";
-type Kind = "all" | "video" | "post" | "image";
+/**
+ * 动态页改成 Server Component 取数。
+ *
+ * 原来首屏要等 JS 下载 + hydrate 之后才知道要请求哪一页动态，
+ * 高 RTT 链路上「HTML → JS → JSON → 图片」四段串行。现在第一页动态随 HTML 一起到达。
+ */
+export default async function DynamicPage() {
+  const initialKey = `/feeds/dynamic?limit=${DYNAMIC_LIMIT}&sort=${DYNAMIC_SORT}&kind=${DYNAMIC_KIND}&seed=${DYNAMIC_SEED}`;
+  const feed = await serverGet<FeedResponse>(initialKey);
 
-const kinds: { value: Kind; label: string }[] = [
-  { value: "all", label: "全部" },
-  { value: "video", label: "视频" },
-  { value: "post", label: "图文" },
-  { value: "image", label: "图集" }
-];
+  const fallback: Record<string, unknown> = {};
+  if (feed) fallback[initialKey] = feed;
 
-export default function DynamicPage() {
-  const [sort, setSort] = useState<Sort>("newest");
-  const [kind, setKind] = useState<Kind>("all");
-  const [seed, setSeed] = useState("dynamic");
-
-  // key 包含 sort/kind/seed，任一变化 SWR 自动重新请求。
-  const key = `/feeds/dynamic?limit=80&sort=${sort}&kind=${kind}&seed=${seed}`;
-  const { data, error, isLoading } = useApi<FeedResponse>(key);
-  const items: FeedItem[] = data?.items ?? [];
-  const failed = Boolean(error);
-
-  return (
-    <AppShell>
-      <div className="mx-auto max-w-[780px]">
-        <section className="mb-6 rounded-2xl border border-white/8 bg-[radial-gradient(circle_at_top_right,rgba(94,234,212,.12),transparent_38%),#11141b] p-5 md:p-6">
-          <h1 className="text-2xl font-semibold md:text-3xl">动态</h1>
-          <p className="mt-2 text-sm leading-6 text-white/48">沿着发布时间翻看每位 UP 的投稿、图文与图片集。</p>
-          <div className="mt-5 flex flex-wrap items-center gap-2">
-            <div className="filter-group">{kinds.map((item) => <button type="button" key={item.value} disabled={kind === item.value} className={kind === item.value ? "active" : ""} onClick={() => setKind(item.value)}>{item.label}</button>)}</div>
-            <div className="filter-group">{(["newest", "oldest", "random"] as Sort[]).map((value) => <button type="button" key={value} disabled={sort === value} className={sort === value ? "active" : ""} onClick={() => setSort(value)}>{value === "newest" ? "最新" : value === "oldest" ? "最早" : "随机"}</button>)}</div>
-            {sort === "random" ? <button type="button" className="primary-button" onClick={() => setSeed(String(Date.now()))}><RefreshCw size={16} /> 换一批</button> : null}
-          </div>
-        </section>
-
-        {failed ? <div className="rounded-2xl border border-red-400/15 bg-red-400/5 p-8 text-center text-sm text-red-100/70">动态加载失败，请确认 API 服务正在运行。</div> : isLoading ? <DynamicSkeleton /> : items.length === 0 ? <EmptyState title="动态还是空的" body="添加媒体库并扫描后，视频、图文和图集会按内容时间出现在这里。" /> : (
-          <div className="space-y-4 animate-fade-in">{items.map((item) => <DynamicFeedCard key={item.id} item={item} />)}</div>
-        )}
-      </div>
-    </AppShell>
-  );
-}
-
-function DynamicSkeleton() {
-  return <div className="space-y-4 skeleton-shimmer">{Array.from({ length: 4 }, (_, index) => <div key={index} className="rounded-2xl border border-white/6 bg-white/[0.025] p-5"><div className="flex gap-3"><div className="h-11 w-11 rounded-full bg-white/6" /><div className="flex-1"><div className="h-4 w-32 rounded bg-white/6" /><div className="mt-2 h-3 w-48 rounded bg-white/[0.035]" /></div></div><div className="ml-14 mt-5 h-4 w-2/3 rounded bg-white/5" /><div className="ml-14 mt-4 aspect-video rounded-xl bg-white/5" /></div>)}</div>;
+  return <DynamicClient initialSeed={DYNAMIC_SEED} fallback={fallback} />;
 }

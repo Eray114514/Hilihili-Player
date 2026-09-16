@@ -2,13 +2,46 @@ import { clearSearchHistory, createId, creatorMessages, favoriteFolders, favorit
 import { getFeedItemsByIds } from "@hilihili/recommendation";
 import type { FeedItem } from "@hilihili/shared";
 import { alias } from "drizzle-orm/sqlite-core";
-import { and, count, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { db } from "../lib/db.js";
 import { clampLimit } from "../lib/clamp.js";
+import { CACHE_POLICY_PRIVATE, sendJson } from "../lib/http-cache.js";
 import { type ActivityRow, emptySchema, favoriteFolderSchema, type ZodFastifyInstance } from "../lib/types.js";
 
+/**
+ * 把 watch_progress + media_parts + item_preferences 的一行映射成 ActivityEntry。
+ * 与 /me/activity 的行形状保持一致（finished/liked 用 boolean，0/1 的转换在此收口）。
+ */
+function toActivityEntries(rows: ActivityRow[]) {
+  const itemsById = new Map<string, FeedItem>();
+  for (const item of getFeedItemsByIds(rows.map((row) => row.itemId))) itemsById.set(item.id, item);
+  return rows.flatMap((row) => {
+    const item = itemsById.get(row.itemId);
+    if (!item) return [];
+    const progressPercent = row.durationSeconds && row.durationSeconds > 0
+      ? Math.min(100, Math.round((row.positionSeconds / row.durationSeconds) * 100))
+      : 0;
+    return [{
+      item,
+      resumePartId: row.resumePartId,
+      resumePartIndex: row.resumePartIndex,
+      resumePartTitle: row.resumePartTitle,
+      positionSeconds: row.positionSeconds,
+      durationSeconds: row.durationSeconds,
+      progressPercent,
+      finished: Boolean(row.finished),
+      liked: Boolean(row.likedAt),
+      startedAt: row.startedAt,
+      completedAt: row.completedAt,
+      updatedAt: row.updatedAt,
+      likedAt: row.likedAt,
+      coinedAt: row.coinedAt
+    }];
+  });
+}
+
 export async function meRoutes(app: ZodFastifyInstance) {
-  app.get<{ Querystring: { limit?: string } }>("/me/activity", async (request) => {
+  app.get<{ Querystring: { limit?: string } }>("/me/activity", async (request, reply) => {
     const limit = clampLimit(Number(request.query.limit ?? 60), 60);
     // history: watch_progress JOIN media_items LEFT JOIN media_parts LEFT JOIN item_preferences(reaction='like')
     // 注意 ip.updated_at AS likedAt 用 reaction='like' 的 LEFT JOIN，保留原语义
@@ -117,7 +150,7 @@ export async function meRoutes(app: ZodFastifyInstance) {
     const recentLikes = likedRows.map(toEntry).filter((entry) => entry !== null);
     const recentCoins = coinedRows.map(toEntry).filter((entry) => entry !== null);
     // stats: 4 个子查询 COUNT，保留为单条 sql 模板（4 次 COUNT 一条返回，比 4 次 select 更高效）
-    return {
+    return sendJson(request, reply, {
       history,
       continueWatching: history.filter((entry) => !entry.finished && entry.positionSeconds > 0),
       completed: history.filter((entry) => entry.finished),
@@ -134,17 +167,46 @@ export async function meRoutes(app: ZodFastifyInstance) {
         (SELECT COUNT(*) FROM ${itemPreferences} WHERE ${itemPreferences.reaction} = 'like') AS likes,
         (SELECT COUNT(*) FROM ${itemPreferences} WHERE ${itemPreferences.coined} = 1) AS coins
       `)
-    };
+    }, CACHE_POLICY_PRIVATE);
   });
 
-  app.get("/me/messages/unread-count", async () => ({
+  // 首页只需要「继续观看」这一小块，但 /me/activity 会连带返回 history/completed/likes/coins
+  // 四个列表（最多 180 条 entry，可达 100KB+）。单独开一个轻量接口，首页只付几条记录的代价。
+  app.get<{ Querystring: { limit?: string } }>("/me/continue-watching", async (request, reply) => {
+    const limit = clampLimit(Number(request.query.limit ?? 4), 4);
+    const rows = db.select({
+      itemId: watchProgress.itemId,
+      resumePartId: watchProgress.partId,
+      resumePartIndex: mediaParts.partIndex,
+      resumePartTitle: mediaParts.title,
+      positionSeconds: watchProgress.positionSeconds,
+      durationSeconds: mediaParts.durationSeconds,
+      finished: sql<number>`COALESCE(${watchProgress.finished}, 0)`,
+      startedAt: watchProgress.startedAt,
+      completedAt: watchProgress.completedAt,
+      updatedAt: watchProgress.updatedAt,
+      likedAt: itemPreferences.updatedAt,
+      coinedAt: sql<string | null>`NULL`
+    })
+      .from(watchProgress)
+      .innerJoin(mediaItems, and(eq(mediaItems.id, watchProgress.itemId), eq(mediaItems.hidden, false)))
+      .leftJoin(mediaParts, eq(mediaParts.id, watchProgress.partId))
+      .leftJoin(itemPreferences, and(eq(itemPreferences.itemId, watchProgress.itemId), eq(itemPreferences.reaction, "like")))
+      .where(and(eq(watchProgress.finished, false), gt(watchProgress.positionSeconds, 0)))
+      .orderBy(desc(watchProgress.updatedAt))
+      .limit(limit)
+      .all();
+    return sendJson(request, reply, { entries: toActivityEntries(rows) }, CACHE_POLICY_PRIVATE);
+  });
+
+  app.get("/me/messages/unread-count", async (request, reply) => sendJson(request, reply, {
     unreadCount: db.select({ count: count() })
       .from(creatorMessages)
       .where(isNull(creatorMessages.readAt))
       .get()?.count ?? 0
-  }));
+  }, CACHE_POLICY_PRIVATE));
 
-  app.get<{ Querystring: { limit?: string; offset?: string } }>("/me/messages", async (request) => {
+  app.get<{ Querystring: { limit?: string; offset?: string } }>("/me/messages", async (request, reply) => {
     const limit = clampLimit(Number(request.query.limit ?? 40), 40);
     const offset = Math.max(Number(request.query.offset ?? 0), 0);
     const rows = db.select({
@@ -172,7 +234,7 @@ export async function meRoutes(app: ZodFastifyInstance) {
       .from(creatorMessages)
       .where(isNull(creatorMessages.readAt))
       .get()?.count ?? 0;
-    return { messages, total, unreadCount, hasMore: offset + rows.length < total };
+    return sendJson(request, reply, { messages, total, unreadCount, hasMore: offset + rows.length < total }, CACHE_POLICY_PRIVATE);
   });
 
   app.post("/me/messages:read", { schema: { body: emptySchema } }, async () => {
@@ -181,9 +243,9 @@ export async function meRoutes(app: ZodFastifyInstance) {
     return { readAt: timestamp };
   });
 
-  app.get("/me/search-history", async () => ({
+  app.get("/me/search-history", async (request, reply) => sendJson(request, reply, {
     items: listSearchHistory(20)
-  }));
+  }, CACHE_POLICY_PRIVATE));
 
   app.delete("/me/search-history", async () => {
     clearSearchHistory();
@@ -198,7 +260,7 @@ export async function meRoutes(app: ZodFastifyInstance) {
     return { ok: true };
   });
 
-  app.get("/me/favorites", async () => ({
+  app.get("/me/favorites", async (request, reply) => sendJson(request, reply, {
     folders: db.select({
       id: favoriteFolders.id,
       name: favoriteFolders.name,
@@ -210,7 +272,7 @@ export async function meRoutes(app: ZodFastifyInstance) {
       .groupBy(favoriteFolders.id)
       .orderBy(sql`COALESCE(MAX(${favorites.createdAt}), ${favoriteFolders.createdAt}) DESC`)
       .all()
-  }));
+  }, CACHE_POLICY_PRIVATE));
 
   app.post("/me/favorites/folders", { schema: { body: favoriteFolderSchema } }, async (request, reply) => {
     const body = request.body;
@@ -232,7 +294,7 @@ export async function meRoutes(app: ZodFastifyInstance) {
     return { ok: true };
   });
 
-  app.get<{ Params: { id: string } }>("/me/favorites/folders/:id/items", async (request) => {
+  app.get<{ Params: { id: string } }>("/me/favorites/folders/:id/items", async (request, reply) => {
     const rows = db.select({
       favoriteId: favorites.id,
       favoritedAt: favorites.createdAt,
@@ -252,6 +314,6 @@ export async function meRoutes(app: ZodFastifyInstance) {
         return { item, favoritedAt: row.favoritedAt, folderId: row.folderId };
       })
       .filter((entry) => entry !== null);
-    return { items };
+    return sendJson(request, reply, { items }, CACHE_POLICY_PRIVATE);
   });
 }

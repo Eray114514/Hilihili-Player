@@ -3,10 +3,11 @@ import { getRecommendedFeed } from "@hilihili/recommendation";
 import { and, asc, count, desc, eq, sql } from "drizzle-orm";
 import { db } from "../lib/db.js";
 import { clampLimit } from "../lib/clamp.js";
+import { CACHE_POLICY_CATALOG, CACHE_POLICY_PRIVATE, sendJson } from "../lib/http-cache.js";
 import { blacklistSchema, followSchema, idParamSchema, type ZodFastifyInstance } from "../lib/types.js";
 
 export async function creatorRoutes(app: ZodFastifyInstance) {
-  app.get("/creators", async () => ({
+  app.get("/creators", async (request, reply) => sendJson(request, reply, {
     creators: db.select({
       id: creators.id,
       name: creators.name,
@@ -21,7 +22,7 @@ export async function creatorRoutes(app: ZodFastifyInstance) {
       .groupBy(creators.id)
       .orderBy(desc(count(mediaItems.id)), asc(creators.name))
       .all()
-  }));
+  }, CACHE_POLICY_CATALOG));
 
   app.get<{ Params: { id: string } }>("/creators/:id", async (request, reply) => {
     // CASE WHEN 用 sql 模板；COALESCE 包裹的 boolean 列保留 0/1 整数 wire format 以匹配原 SQL
@@ -60,7 +61,7 @@ export async function creatorRoutes(app: ZodFastifyInstance) {
       .groupBy(categories.id)
       .orderBy(desc(count(mediaItems.id)), asc(categories.name))
       .all();
-    return { creator, stats, categories: categoriesRows };
+    return sendJson(request, reply, { creator, stats, categories: categoriesRows }, CACHE_POLICY_PRIVATE);
   });
 
   app.get<{ Params: { id: string }; Querystring: { kind?: "video" | "post" | "image"; limit?: string; offset?: string } }>("/creators/:id/items", async (request, reply) => {
@@ -78,7 +79,7 @@ export async function creatorRoutes(app: ZodFastifyInstance) {
       .get();
     const total = countResult?.count ?? 0;
     const items = getRecommendedFeed({ creatorId: request.params.id, kind, limit, offset, includeImages: true, includeFinished: true, includeBlacklisted: true, mode: "latest" });
-    return { items, total, hasMore: offset + items.length < total };
+    return sendJson(request, reply, { items, total, hasMore: offset + items.length < total }, CACHE_POLICY_PRIVATE);
   });
 
   app.put("/creators/:id/follow", { schema: { params: idParamSchema, body: followSchema } }, async (request, reply) => {

@@ -120,11 +120,65 @@ export const mediaParts = sqliteTable(
     previewSpriteRows: integer("preview_sprite_rows"),
     previewSpriteInterval: real("preview_sprite_interval"),
     previewThumbW: integer("preview_thumb_w"),
-    previewThumbH: integer("preview_thumb_h")
+    previewThumbH: integer("preview_thumb_h"),
+    // HLS 远程播放产物（可切片的低码率版本）。这些列由 migration v7 补齐，
+    // 基线 CREATE TABLE 里不声明——与 items_failed 等列的处理方式一致。
+    hlsPath: text("hls_path"),
+    /** 生成 HLS 时源文件的指纹；与 fingerprint 不一致即视为失效（换文件后必须重建） */
+    hlsFingerprint: text("hls_fingerprint"),
+    hlsStatus: text("hls_status", { enum: ["none", "queued", "running", "ready", "stale", "failed"] }).notNull().default("none"),
+    hlsError: text("hls_error"),
+    /** 实际生成的档位清单（JSON），供 master playlist 与画质菜单使用 */
+    hlsLadder: text("hls_ladder"),
+    hlsUpdatedAt: text("hls_updated_at"),
+    hlsAttempts: integer("hls_attempts").notNull().default(0),
+    /** 供缓存 LRU 淘汰使用 */
+    lastPlayedAt: text("last_played_at"),
+    playCount: integer("play_count").notNull().default(0)
   },
   (table) => ({
     byItem: index("media_parts_item_idx").on(table.itemId),
     byPath: uniqueIndex("media_parts_path_idx").on(table.path)
+  })
+);
+
+/**
+ * 转码任务队列。
+ *
+ * 不复用 scan_runs：那张表是 library 粒度的整轮扫描 + 缩略图计数器，
+ * 既没有 part 粒度，enqueueScan 还会按 library 去重。转码需要按分P、按档位、
+ * 可重试、可中断、可断点续跑，所以单独建表。
+ */
+export const transcodeTasks = sqliteTable(
+  "transcode_tasks",
+  {
+    id: text("id").primaryKey(),
+    partId: text("part_id").notNull().references(() => mediaParts.id, { onDelete: "cascade" }),
+    /** 入队时的源文件指纹，用于判断任务是否已过期（源文件被替换） */
+    fingerprint: text("fingerprint").notNull(),
+    profile: text("profile").notNull(),
+    status: text("status", { enum: ["queued", "running", "complete", "failed", "canceled"] }).notNull(),
+    /** 越大越先跑：点播请求 100，扫描预热 0 */
+    priority: integer("priority").notNull().default(0),
+    /** 0-1，由 ffmpeg 输出解析 */
+    progress: real("progress").notNull().default(0),
+    encoder: text("encoder"),
+    attempt: integer("attempt").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(3),
+    error: text("error"),
+    queuedAt: text("queued_at").notNull(),
+    startedAt: text("started_at"),
+    finishedAt: text("finished_at"),
+    /** 失败退避：到点之前不取该任务 */
+    nextAttemptAt: text("next_attempt_at"),
+    bytesOut: integer("bytes_out"),
+    durationMs: integer("duration_ms")
+  },
+  (table) => ({
+    // 幂等入队：同一个分P 的同一个档位只会有一条任务
+    byPartProfile: uniqueIndex("transcode_tasks_part_profile_idx").on(table.partId, table.profile),
+    byQueue: index("transcode_tasks_queue_idx").on(table.status, table.priority, table.queuedAt),
+    byFingerprint: index("transcode_tasks_fingerprint_idx").on(table.fingerprint)
   })
 );
 

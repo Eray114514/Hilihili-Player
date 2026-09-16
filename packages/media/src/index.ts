@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, readSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import os from "node:os";
 import { createId, getDataDir, getSqlite, nowIso, type SqliteDatabase } from "@hilihili/db";
@@ -236,17 +236,41 @@ function upsertPartWithSubtitles(
   // media_parts.path 是 UNIQUE 约束。clearParts 只会清理当前 item 的分片，
   // 若同一路径仍挂在其它 item 上（例如上次扫描失败遗留的孤儿分片，或目录结构
   // 变化导致 upsertMediaItem 新建了 item），直接 INSERT 会触发 UNIQUE 冲突。
-  // 这里复用已存在的行：路径相同意味着文件相同，duration/stream/预览图等派生
-  // 元数据仍然有效，只需把归属 item 和基础字段更新到当前值即可。
-  const existing = db.prepare("SELECT id FROM media_parts WHERE path = ?").get(videoPath) as { id: string } | undefined;
+  // 这里复用已存在的行，只把归属 item 与基础字段更新到当前值；
+  // 文件内容真的变了（指纹不同）时再额外作废全部派生产物，见下面的分支。
+  const existing = db.prepare("SELECT id, fingerprint FROM media_parts WHERE path = ?").get(videoPath) as { id: string; fingerprint: string } | undefined;
   let partId: string;
   if (existing) {
     partId = existing.id;
-    db.prepare(`
-      UPDATE media_parts
-      SET item_id = ?, title = ?, part_index = ?, size_bytes = ?, fingerprint = ?
-      WHERE id = ?
-    `).run(itemId, title, partIndex, sizeBytes, fingerprint, partId);
+    // 文件内容变了（指纹不同）时，所有派生产物都必须作废重建：
+    // duration / stream_path / 预览雪碧图 / HLS 切片都对应旧内容。
+    // 原来只更新基础字段，而阶段 2 的 SQL 又会跳过“ready 且 stream_path 非空”的行，
+    // 结果是换文件后继续发旧流——只有物理文件缺失时才靠兜底发现。
+    // 这里一次性重置，并作废该分P 尚未跑完的转码任务。
+    const changed = existing.fingerprint !== fingerprint;
+    if (changed) {
+      db.prepare(`
+        UPDATE media_parts
+        SET item_id = ?, title = ?, part_index = ?, size_bytes = ?, fingerprint = ?,
+            duration_seconds = NULL,
+            stream_path = NULL, stream_size_bytes = NULL,
+            compatibility_status = 'pending', compatibility_error = NULL,
+            compatibility_attempts = 0, last_compatibility_attempt_at = NULL,
+            preview_sprite_path = NULL, preview_sprite_cols = NULL, preview_sprite_rows = NULL,
+            preview_sprite_interval = NULL, preview_thumb_w = NULL, preview_thumb_h = NULL,
+            hls_path = NULL, hls_fingerprint = NULL, hls_status = 'none',
+            hls_error = NULL, hls_ladder = NULL, hls_updated_at = NULL, hls_attempts = 0
+        WHERE id = ?
+      `).run(itemId, title, partIndex, sizeBytes, fingerprint, partId);
+      db.prepare("UPDATE transcode_tasks SET status = 'canceled', finished_at = ?, error = ? WHERE part_id = ? AND status IN ('queued', 'running')")
+        .run(nowIso(), "source fingerprint changed", partId);
+    } else {
+      db.prepare(`
+        UPDATE media_parts
+        SET item_id = ?, title = ?, part_index = ?, size_bytes = ?, fingerprint = ?
+        WHERE id = ?
+      `).run(itemId, title, partIndex, sizeBytes, fingerprint, partId);
+    }
   } else {
     partId = createId("part");
     db.prepare(`
@@ -283,6 +307,8 @@ export async function processNextScanRun() {
   }
 
   db.prepare("UPDATE scan_runs SET status = 'running', message = NULL WHERE id = ?").run(run.id);
+  // 让转码循环在整轮扫描期间让路：两边都要跑 ffmpeg，同时跑会把 CPU 和磁盘抢干净
+  setScanBusy(true);
   try {
     const libraries = run.library_id
       ? db.prepare("SELECT * FROM libraries WHERE id = ? AND enabled = 1").all(run.library_id) as LibraryRow[]
@@ -302,6 +328,10 @@ export async function processNextScanRun() {
     pruneOrphanTags(db);
     db.prepare("UPDATE scan_runs SET status = 'complete', finished_at = ?, items_indexed = ?, items_failed = ?, items_skipped = ? WHERE id = ?")
       .run(nowIso(), stats.indexed, stats.failed, stats.skipped, run.id);
+    // 扫描收尾顺手回收没人引用的缓存文件与超预算的 HLS 产物
+    pruneOrphanCacheFiles();
+    enforceHlsCacheBudget();
+    enqueueWarmupTranscodes();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // 扫描失败不仅要写进 scan_runs.message，也要打到 stderr，否则 worker 日志
@@ -309,6 +339,8 @@ export async function processNextScanRun() {
     log.error("scan run failed", { runId: run.id, message });
     db.prepare("UPDATE scan_runs SET status = 'failed', message = ?, finished_at = ? WHERE id = ?")
       .run(message, nowIso(), run.id);
+  } finally {
+    setScanBusy(false);
   }
   return true;
 }
@@ -1155,16 +1187,20 @@ function pruneUnseenItems(db: SqliteDatabase, libraryId: string, seenItemIds: Se
   // thumbnail_path 是 image 级缩略图。这些都存在 media-cache 目录下，不清理会泄漏。
   const placeholders = staleIds.map(() => "?").join(",");
   const stalePaths: string[] = [];
+  // hls_path 指向的是目录（<fingerprint>/），要递归删，不能走 tryUnlink
+  const staleDirs = new Set<string>();
   const itemRows = db.prepare(`SELECT generated_cover_path FROM media_items WHERE id IN (${placeholders})`)
     .all(...staleIds) as { generated_cover_path: string | null }[];
   for (const row of itemRows) {
     if (row.generated_cover_path) stalePaths.push(row.generated_cover_path);
   }
-  const partRows = db.prepare(`SELECT stream_path, preview_sprite_path FROM media_parts WHERE item_id IN (${placeholders})`)
-    .all(...staleIds) as { stream_path: string | null; preview_sprite_path: string | null }[];
+  const partRows = db.prepare(`SELECT stream_path, preview_sprite_path, hls_path FROM media_parts WHERE item_id IN (${placeholders})`)
+    .all(...staleIds) as { stream_path: string | null; preview_sprite_path: string | null; hls_path: string | null }[];
   for (const row of partRows) {
     if (row.stream_path) stalePaths.push(row.stream_path);
     if (row.preview_sprite_path) stalePaths.push(row.preview_sprite_path);
+    // hls_path 指向的是 <fingerprint> 目录，用 rmSync 递归删（见下方清理分支）
+    if (row.hls_path) staleDirs.add(row.hls_path);
   }
   const imageRows = db.prepare(`SELECT thumbnail_path FROM media_images WHERE item_id IN (${placeholders})`)
     .all(...staleIds) as { thumbnail_path: string | null }[];
@@ -1187,6 +1223,13 @@ function pruneUnseenItems(db: SqliteDatabase, libraryId: string, seenItemIds: Se
   // DB 删除成功后再清理物理缓存文件，避免删错（事务回滚时文件已删无法恢复）。
   for (const path of stalePaths) {
     tryUnlink(path);
+  }
+  for (const dir of staleDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (error) {
+      log.warn("unable to remove hls directory", { dir, error: error instanceof Error ? error.message : String(error) });
+    }
   }
   log.info("pruned stale items", { count: staleIds.length, libraryId });
 }
@@ -1751,6 +1794,49 @@ async function generateImageThumbnail(imagePath: string, fingerprint: string, is
   return outputPath;
 }
 
+// 图片变体宽度阶梯：前端 srcset 只会请求这几档，避免任意宽度的请求把缓存打爆
+const IMAGE_VARIANT_WIDTHS = [320, 480, 640, 960, 1280];
+
+/** 把请求宽度吸附到最近的阶梯档位（向上取整），超出最大档则封顶。 */
+export function snapVariantWidth(requested: number): number {
+  const value = Number.isFinite(requested) && requested > 0 ? Math.round(requested) : IMAGE_VARIANT_WIDTHS[0];
+  return IMAGE_VARIANT_WIDTHS.find((width) => width >= value) ?? IMAGE_VARIANT_WIDTHS[IMAGE_VARIANT_WIDTHS.length - 1];
+}
+
+/**
+ * 按需生成指定宽度的图片变体（webp），供前端 srcset 使用。
+ *
+ * 复用 media-cache 的 `<cacheKey>.<后缀>` 命名范式，幂等：文件已存在直接返回。
+ * cacheKey 由调用方提供（item/image 用 DB 里的 fingerprint；creator 资产没有
+ * fingerprint 列，用 path+size+mtime 派生的稳定值）。
+ * withoutEnlargement 保证小图不会被放大。
+ */
+export async function getImageVariant(sourcePath: string, cacheKey: string, width: number, isAnimated = false): Promise<string> {
+  const cacheDir = getAppMediaCacheDir();
+  mkdirSync(cacheDir, { recursive: true });
+  const target = snapVariantWidth(width);
+  const outputPath = join(cacheDir, `${cacheKey}.w${target}.webp`);
+  if (existsSync(outputPath)) {
+    return outputPath;
+  }
+  const temporaryPath = `${outputPath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    const pipe = sharp(sourcePath, { animated: isAnimated })
+      .rotate()
+      .resize({ width: target, withoutEnlargement: true });
+    if (isAnimated) {
+      await pipe.webp({ quality: 78, effort: 4 }).toFile(temporaryPath);
+    } else {
+      await pipe.webp({ quality: 78 }).toFile(temporaryPath);
+    }
+    // 并发请求同一档位时后到者覆盖先到者，内容一致，不会损坏
+    renameSync(temporaryPath, outputPath);
+  } finally {
+    tryUnlink(temporaryPath);
+  }
+  return outputPath;
+}
+
 const SPRITE_THUMB_W = 160;
 const SPRITE_THUMB_H = 90;
 const SPRITE_COLS = 10;
@@ -1787,15 +1873,28 @@ async function generatePreviewSprite(videoPath: string, fingerprint: string, dur
   return { path: outputPath, cols: SPRITE_COLS, rows, interval, thumbW: SPRITE_THUMB_W, thumbH: SPRITE_THUMB_H };
 }
 
+// 封面基础分辨率：源视频够宽时出 1280x720（首页 hero 实际要 ~1000px 宽，640 会明显发虚），
+// 否则保持 640x360——避免把低清源放大成更大的糊图，也不会白白多发字节。
+// 分辨率写进文件名，将来改尺寸会自动生成新文件而不复用旧档。
+const COVER_WIDE_WIDTH = 1280;
+const COVER_WIDE_HEIGHT = 720;
+const COVER_SMALL_WIDTH = 640;
+const COVER_SMALL_HEIGHT = 360;
+
 async function generateThumbnail(videoPath: string, fingerprint: string) {
   const cacheDir = getAppMediaCacheDir();
   mkdirSync(cacheDir, { recursive: true });
-  const outputPath = join(cacheDir, `${fingerprint}.webp`);
+
+  const probed = await probeMedia(videoPath).catch(() => null);
+  const duration = probed?.duration ?? 0;
+  const coverWidth = (probed?.width ?? 0) >= COVER_WIDE_WIDTH ? COVER_WIDE_WIDTH : COVER_SMALL_WIDTH;
+  const coverHeight = coverWidth === COVER_WIDE_WIDTH ? COVER_WIDE_HEIGHT : COVER_SMALL_HEIGHT;
+  const quality = coverWidth === COVER_WIDE_WIDTH ? 78 : 82;
+  const outputPath = join(cacheDir, `${fingerprint}.cover${coverWidth}.webp`);
   if (existsSync(outputPath)) {
     return outputPath;
   }
 
-  const duration = await probeDuration(videoPath).catch(() => 0);
   const rawCandidates = duration > 0
     ? (duration < 5 ? [duration / 2] : [duration * 0.2, duration * 0.35, duration * 0.5])
     : [0.2, 1, 5, 10];
@@ -1806,12 +1905,13 @@ async function generateThumbnail(videoPath: string, fingerprint: string) {
 
   try {
     for (let index = 0; index < candidates.length; index += 1) {
-      const candidatePath = join(cacheDir, `${fingerprint}.${index}.webp`);
+      const candidatePath = join(cacheDir, `${fingerprint}.cover${coverWidth}.${index}.webp`);
       try {
         await runProcess(getFfmpegPath(), [
           "-hide_banner", "-loglevel", "error", "-ss", String(candidates[index]), "-i", videoPath,
-          "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=640:360:force_original_aspect_ratio=increase,crop=640:360",
-          "-c:v", "libwebp", "-quality", "82", "-y", candidatePath
+          "-map", "0:v:0", "-frames:v", "1",
+          "-vf", `scale=${coverWidth}:${coverHeight}:force_original_aspect_ratio=increase,crop=${coverWidth}:${coverHeight}`,
+          "-c:v", "libwebp", "-quality", String(quality), "-y", candidatePath
         ]);
         if (!existsSync(candidatePath)) continue;
         // Read into memory first so libvips does not keep the candidate file locked on Windows.
@@ -1844,32 +1944,69 @@ function tryUnlink(path: string) {
   }
 }
 
-async function probeDuration(videoPath: string) {
-  return (await probeMedia(videoPath)).duration;
-}
-
 type ProbedMedia = {
   duration: number;
   formatNames: string[];
   videoCodec: string | null;
   audioCodec: string | null;
+  width: number | null;
+  height: number | null;
+  /** 视频码率（bps）；流级缺失时回退为容器总码率。用于决定「直接切片」还是「重编码降码率」 */
+  videoBitrate: number | null;
+  pixelFormat: string | null;
+  colorTransfer: string | null;
+  frameRate: number | null;
+  videoStreamCount: number;
+  audioStreamCount: number;
+  subtitleStreamCount: number;
 };
+
+function parseFrameRate(value: string | undefined): number | null {
+  if (!value) return null;
+  const [numerator, denominator] = value.split("/").map(Number);
+  if (!numerator || !denominator) return null;
+  const rate = numerator / denominator;
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
 
 async function probeMedia(videoPath: string): Promise<ProbedMedia> {
   const output = await runProcess(getFfprobePath(), [
-    "-v", "error", "-show_entries", "format=format_name,duration:stream=codec_type,codec_name", "-of", "json", videoPath
+    "-v", "error",
+    "-show_entries",
+    "format=format_name,duration,bit_rate:stream=codec_type,codec_name,width,height,bit_rate,pix_fmt,color_transfer,avg_frame_rate",
+    "-of", "json", videoPath
   ]);
   const result = JSON.parse(output) as {
-    format?: { format_name?: string; duration?: string };
-    streams?: { codec_type?: string; codec_name?: string }[];
+    format?: { format_name?: string; duration?: string; bit_rate?: string };
+    streams?: {
+      codec_type?: string;
+      codec_name?: string;
+      width?: number;
+      height?: number;
+      bit_rate?: string;
+      pix_fmt?: string;
+      color_transfer?: string;
+      avg_frame_rate?: string;
+    }[];
   };
-  const video = result.streams?.find((stream) => stream.codec_type === "video");
-  const audio = result.streams?.find((stream) => stream.codec_type === "audio");
+  const streams = result.streams ?? [];
+  const video = streams.find((stream) => stream.codec_type === "video");
+  const audio = streams.find((stream) => stream.codec_type === "audio");
+  const formatBitrate = Number(result.format?.bit_rate) || 0;
   return {
     duration: Number(result.format?.duration) || 0,
     formatNames: (result.format?.format_name ?? "").split(",").filter(Boolean),
     videoCodec: video?.codec_name ?? null,
-    audioCodec: audio?.codec_name ?? null
+    audioCodec: audio?.codec_name ?? null,
+    width: video?.width ?? null,
+    height: video?.height ?? null,
+    videoBitrate: Number(video?.bit_rate) || formatBitrate || null,
+    pixelFormat: video?.pix_fmt ?? null,
+    colorTransfer: video?.color_transfer ?? null,
+    frameRate: parseFrameRate(video?.avg_frame_rate),
+    videoStreamCount: streams.filter((stream) => stream.codec_type === "video").length,
+    audioStreamCount: streams.filter((stream) => stream.codec_type === "audio").length,
+    subtitleStreamCount: streams.filter((stream) => stream.codec_type === "subtitle").length
   };
 }
 
@@ -1994,30 +2131,66 @@ function getFfprobePath() {
   return (require("ffprobe-static") as { path?: string }).path ?? "ffprobe";
 }
 
-function runProcess(command: string, args: string[], timeoutMs = DEFAULT_PROCESS_TIMEOUT_MS) {
+/** 子进程被 AbortSignal 主动中断（区别于超时/失败）：调用方应把任务放回队列而不是计一次失败。 */
+export class ProcessAbortedError extends Error {
+  constructor(command: string) {
+    super(`${command} aborted`);
+    this.name = "ProcessAbortedError";
+  }
+}
+
+function runProcess(command: string, args: string[], timeoutMs = DEFAULT_PROCESS_TIMEOUT_MS, signal?: AbortSignal, onStdout?: (chunk: string) => void) {
   return new Promise<string>((resolvePromise, reject) => {
+    if (signal?.aborted) {
+      reject(new ProcessAbortedError(command));
+      return;
+    }
     const child = spawn(command, args, { windowsHide: true });
     let stdout = "";
     let stderr = "";
-    // 5 分钟兜底超时：ffmpeg/ffprobe 正常秒级返回，转码长视频也应在 5 分钟内完成。
-    // 超时后 SIGKILL 子进程，避免 worker 卡死在挂起的 ffmpeg 上阻塞整个扫描队列。
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+    // 5 分钟兜底超时：ffmpeg/ffprobe 正常秒级返回；转码任务会显式传入更长的超时。
+    // 超时后 SIGKILL 子进程，避免 worker 卡死在挂起的 ffmpeg 上阻塞整个队列。
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(new Error(`${command} timed out after ${timeoutMs}ms`));
+      settle(() => reject(new Error(`${command} timed out after ${timeoutMs}ms`)));
     }, timeoutMs);
-    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+    // 中断：先 SIGTERM 让 ffmpeg 自己收尾（写出可用的临时文件），3 秒后还在跑就 SIGKILL。
+    // worker 优雅退出时靠它把在跑的转码停掉，而不是留着孤儿进程。
+    const onAbort = () => {
+      child.kill("SIGTERM");
+      const killTimer = setTimeout(() => child.kill("SIGKILL"), 3000);
+      killTimer.unref?.();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.stdout.on("data", (chunk) => {
+      const text = String(chunk);
+      stdout += text;
+      onStdout?.(text);
+    });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
     child.on("error", (error) => {
       clearTimeout(timer);
-      reject(error);
+      signal?.removeEventListener("abort", onAbort);
+      settle(() => reject(error));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      if (code === 0) {
-        resolvePromise(stdout);
-      } else {
-        reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
-      }
+      signal?.removeEventListener("abort", onAbort);
+      settle(() => {
+        if (signal?.aborted) {
+          reject(new ProcessAbortedError(command));
+        } else if (code === 0) {
+          resolvePromise(stdout);
+        } else {
+          reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
+        }
+      });
     });
   });
 }
@@ -2181,4 +2354,601 @@ function safeRealpath(path: string) {
 
 export function getAppMediaCacheDir() {
   return join(getDataDir(), "media-cache");
+}
+
+// ─────────────────────────── HLS 远程播放产物 ───────────────────────────
+//
+// 目标：把「浏览器兼容性转码」和「远程低码率」合并成一份可切片的产物。
+//
+// 策略是「直通优先」：源本身就是 H.264、8bit yuv420p、码率不超标、关键帧间隔正常时，
+// 直接 -c copy 切片——零 CPU、秒级完成、画质无损，能覆盖大部分本地库存。
+// 否则用硬件编码（QSV，容器里拿不到 /dev/dri 时回退 libx264）重编到目标码率，
+// 并强制 6s 关键帧：保证分片可独立解码、起播快、可任意 seek。
+//
+// 档位只做「源分辨率（封顶 1080p）」的主档，外加一个按需生成的省流档。
+// 刻意不做 360p/480p 这类降质档——远端宁可先缓冲一会也不接受糊。
+
+const HLS_SEGMENT_SECONDS = 6;
+const HLS_MAX_HEIGHT = 1080;
+const HLS_MAX_KEYFRAME_INTERVAL_SECONDS = 10;
+// 长片转码可能跑很久（尤其回退到 libx264），给足 6 小时
+const HLS_PROCESS_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const HLS_DEFAULT_MAX_BYTES = 20 * 1024 * 1024 * 1024;
+
+export type HlsProfileName = "main" | "saving";
+
+export type HlsProfile = {
+  name: HlsProfileName;
+  width: number;
+  height: number;
+  videoBitrateKbps: number;
+  audioBitrateKbps: number;
+  /** 纯流复制（不重新编码） */
+  copy: boolean;
+  /** 需要缩放到目标分辨率 */
+  downscale: boolean;
+};
+
+export type HlsLadderEntry = HlsProfile & {
+  /** EXT-X-STREAM-INF 的 BANDWIDTH，单位 bps */
+  bandwidthBps: number;
+  segments: number;
+  durationSeconds: number;
+};
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function hlsMaxBitrateKbps() {
+  return Number(process.env.HILI_HLS_MAX_BITRATE ?? 8000);
+}
+
+function hlsCacheDir() {
+  return join(getAppMediaCacheDir(), "hls");
+}
+
+function hlsPackageDir(fingerprint: string) {
+  return join(hlsCacheDir(), fingerprint);
+}
+
+/** 按分辨率给目标码率。观感优先，不做激进压缩。 */
+function targetVideoBitrateKbps(height: number) {
+  if (height >= 1080) return 6000;
+  if (height >= 720) return 3000;
+  if (height >= 480) return 1500;
+  return 900;
+}
+
+function even(value: number) {
+  const rounded = Math.round(value);
+  return rounded % 2 === 0 ? rounded : rounded + 1;
+}
+
+let cachedHlsEncoder: string | null = null;
+
+/**
+ * 选转码器：优先硬件编码（容器里需要映射 /dev/dri）。
+ * 探测一次并缓存；失败自动回退软编，不让整个转码管线因为驱动缺失而不可用。
+ */
+export async function detectHlsEncoder(): Promise<string> {
+  const override = process.env.HILI_HLS_ENCODER;
+  if (override) return override;
+  if (cachedHlsEncoder) return cachedHlsEncoder;
+  for (const candidate of ["h264_qsv", "libx264"]) {
+    try {
+      await runProcess(getFfmpegPath(), [
+        "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "testsrc=size=640x360:rate=10", "-t", "1",
+        "-c:v", candidate, "-f", "null", "-"
+      ], 30_000);
+      cachedHlsEncoder = candidate;
+      log.info("hls encoder selected", { encoder: candidate });
+      return candidate;
+    } catch (error) {
+      log.warn("hls encoder unavailable", { encoder: candidate, error: errorMessage(error) });
+    }
+  }
+  cachedHlsEncoder = "libx264";
+  return cachedHlsEncoder;
+}
+
+/**
+ * 采样开头若干秒的关键帧时间戳，返回中位间隔（秒）；测不出来返回 0。
+ * 用 -skip_frame nokey 让 ffprobe 只解码关键帧，成本很低。
+ * 关键帧太稀疏的源不适合直接切片（分片会拉到几十秒，起播要下完整片），必须重编。
+ */
+async function measureKeyframeInterval(videoPath: string, sampleSeconds = 120): Promise<number> {
+  try {
+    const output = await runProcess(getFfprobePath(), [
+      "-v", "error", "-select_streams", "v:0",
+      "-skip_frame", "nokey",
+      "-show_entries", "frame=pts_time",
+      "-read_intervals", `%+${sampleSeconds}`,
+      "-of", "csv=p=0",
+      videoPath
+    ], 120_000);
+    const times = output
+      .split("\n")
+      .map((line) => Number(line.trim()))
+      .filter((value) => Number.isFinite(value));
+    if (times.length < 3) return 0;
+    const gaps: number[] = [];
+    for (let index = 1; index < times.length; index += 1) {
+      const gap = times[index] - times[index - 1];
+      if (gap > 0) gaps.push(gap);
+    }
+    if (gaps.length === 0) return 0;
+    gaps.sort((a, b) => a - b);
+    return gaps[Math.floor(gaps.length / 2)];
+  } catch (error) {
+    log.warn("unable to measure keyframe interval", { path: videoPath, error: errorMessage(error) });
+    return 0;
+  }
+}
+
+/** 依据源文件的探测结果决定目标档位。 */
+export function planHlsProfile(media: ProbedMedia, keyframeInterval: number, name: HlsProfileName = "main"): HlsProfile {
+  const sourceHeight = media.height ?? 0;
+  const sourceWidth = media.width ?? 0;
+  const targetHeight = name === "saving" ? 720 : HLS_MAX_HEIGHT;
+  const height = sourceHeight > 0 ? Math.min(sourceHeight, targetHeight) : 0;
+  const width = sourceHeight > 0 && sourceWidth > 0 ? even(sourceWidth * (height / sourceHeight)) : sourceWidth;
+  const videoBitrateKbps = name === "saving" ? 1500 : targetVideoBitrateKbps(height);
+  const sourceKbps = (media.videoBitrate ?? 0) / 1000;
+
+  // 直通条件：编码/位深/码率/关键帧间隔都合适时才敢 -c copy
+  const copy = name === "main"
+    && media.videoCodec === "h264"
+    && (media.pixelFormat === "yuv420p" || media.pixelFormat === "yuvj420p")
+    && sourceKbps > 0
+    && sourceKbps <= hlsMaxBitrateKbps()
+    && keyframeInterval > 0
+    && keyframeInterval <= HLS_MAX_KEYFRAME_INTERVAL_SECONDS
+    && sourceHeight > 0
+    && sourceHeight <= HLS_MAX_HEIGHT;
+
+  return {
+    name,
+    width,
+    height: height || sourceHeight,
+    videoBitrateKbps,
+    audioBitrateKbps: name === "saving" ? 96 : 128,
+    copy,
+    downscale: !copy && height > 0 && sourceHeight > height
+  };
+}
+
+function hlsFfmpegArgs(sourcePath: string, profile: HlsProfile, outputDir: string, encoder: string) {
+  const args = [
+    "-hide_banner", "-loglevel", "error",
+    // -progress 让 stdout 持续输出 out_time_us，用于上报进度
+    "-progress", "pipe:1", "-nostats",
+    "-i", sourcePath,
+    "-map", "0:V:0", "-map", "0:a:0?"
+  ];
+  if (profile.copy) {
+    args.push("-c", "copy");
+  } else {
+    if (profile.downscale) {
+      args.push("-vf", `scale=-2:${profile.height}`);
+    }
+    args.push("-c:v", encoder);
+    if (encoder === "h264_qsv") {
+      // QSV 的 ICQ 模式：质量优先，同时用 maxrate 兜住峰值
+      args.push("-global_quality", "23", "-look_ahead", "0");
+    } else {
+      args.push("-preset", "veryfast", "-crf", "21");
+    }
+    args.push(
+      "-maxrate", `${profile.videoBitrateKbps}k`,
+      "-bufsize", `${profile.videoBitrateKbps * 2}k`,
+      "-pix_fmt", "yuv420p",
+      // 强制 6s 关键帧：分片才能独立解码，seek 与起播才可控
+      "-force_key_frames", `expr:gte(t,n_forced*${HLS_SEGMENT_SECONDS})`,
+      "-sc_threshold", "0",
+      "-c:a", "aac", "-b:a", `${profile.audioBitrateKbps}k`, "-ac", "2"
+    );
+  }
+  args.push(
+    "-f", "hls",
+    "-hls_time", String(HLS_SEGMENT_SECONDS),
+    "-hls_playlist_type", "vod",
+    "-hls_flags", "independent_segments+temp_file",
+    "-hls_segment_filename", join(outputDir, "seg_%05d.ts"),
+    join(outputDir, "index.m3u8")
+  );
+  return args;
+}
+
+type PlaylistSummary = { segments: number; durationSeconds: number };
+
+function summarizePlaylist(playlistPath: string): PlaylistSummary {
+  const content = readFileSync(playlistPath, "utf8");
+  let segments = 0;
+  let durationSeconds = 0;
+  for (const line of content.split("\n")) {
+    if (!line.startsWith("#EXTINF:")) continue;
+    segments += 1;
+    durationSeconds += Number(line.slice("#EXTINF:".length).split(",")[0]) || 0;
+  }
+  return { segments, durationSeconds };
+}
+
+function readLadder(raw: string | null): HlsLadderEntry[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as HlsLadderEntry[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** master 从数据库里的档位清单生成，每完成一个档位就增量重写一次。 */
+function writeMasterPlaylist(fingerprint: string, ladder: HlsLadderEntry[]) {
+  const dir = hlsPackageDir(fingerprint);
+  mkdirSync(dir, { recursive: true });
+  const lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-INDEPENDENT-SEGMENTS"];
+  for (const entry of ladder) {
+    lines.push(
+      `#EXT-X-STREAM-INF:BANDWIDTH=${Math.round(entry.bandwidthBps)},RESOLUTION=${entry.width}x${entry.height}`,
+      `${entry.name}/index.m3u8`
+    );
+  }
+  writeFileSync(join(dir, "master.m3u8"), `${lines.join("\n")}\n`, "utf8");
+}
+
+function removeHlsArtifacts(fingerprint: string | null) {
+  if (!fingerprint) return;
+  try {
+    rmSync(hlsPackageDir(fingerprint), { recursive: true, force: true });
+  } catch (error) {
+    log.warn("unable to remove hls artifacts", { fingerprint, error: errorMessage(error) });
+  }
+}
+
+/**
+ * 幂等入队。同一个分P 的同一个档位只保留一条任务；
+ * 正在跑的任务不会被抢占，已完成且指纹一致的也不会重复排队。
+ */
+export function enqueueTranscode(partId: string, profile: HlsProfileName = "main", priority = 0) {
+  const db = getSqlite();
+  const part = db.prepare("SELECT id, fingerprint FROM media_parts WHERE id = ?").get(partId) as { id: string; fingerprint: string } | undefined;
+  if (!part) return null;
+  const id = createId("tjob");
+  db.prepare(`
+    INSERT INTO transcode_tasks (id, part_id, fingerprint, profile, status, priority, queued_at)
+    VALUES (?, ?, ?, ?, 'queued', ?, ?)
+    ON CONFLICT(part_id, profile) DO UPDATE SET
+      fingerprint = excluded.fingerprint,
+      status = 'queued',
+      priority = MAX(transcode_tasks.priority, excluded.priority),
+      progress = 0,
+      error = NULL,
+      next_attempt_at = NULL,
+      queued_at = excluded.queued_at
+    WHERE transcode_tasks.status <> 'running'
+      AND NOT (transcode_tasks.status = 'complete' AND transcode_tasks.fingerprint = excluded.fingerprint)
+  `).run(id, partId, part.fingerprint, profile, priority, nowIso());
+  db.prepare("UPDATE media_parts SET hls_status = 'queued', hls_error = NULL WHERE id = ? AND hls_status NOT IN ('running', 'ready')").run(partId);
+  return id;
+}
+
+type TranscodeTaskRow = {
+  id: string;
+  part_id: string;
+  profile: string;
+  fingerprint: string;
+  attempt: number;
+  max_attempts: number;
+  path: string;
+  part_fingerprint: string;
+  duration_seconds: number | null;
+};
+
+/**
+ * 取一条可跑的转码任务并执行。没有任务返回 false（worker 循环据此判断是否可以歇一会）。
+ *
+ * 产物先写进临时目录，成功后再按档位原子替换，避免半成品被播放器读到。
+ */
+export async function processNextTranscodeTask(signal?: AbortSignal): Promise<boolean> {
+  const db = getSqlite();
+  const task = db.prepare(`
+    SELECT t.id, t.part_id, t.profile, t.fingerprint, t.attempt, t.max_attempts,
+           mp.path, mp.fingerprint AS part_fingerprint, mp.duration_seconds
+    FROM transcode_tasks t
+    JOIN media_parts mp ON mp.id = t.part_id
+    WHERE t.status = 'queued'
+      AND t.attempt < t.max_attempts
+      AND (t.next_attempt_at IS NULL OR t.next_attempt_at <= ?)
+    ORDER BY t.priority DESC, t.queued_at ASC
+    LIMIT 1
+  `).get(nowIso()) as TranscodeTaskRow | undefined;
+  if (!task) return false;
+
+  const startedAt = Date.now();
+  // 源文件已被替换：这条任务的目标已经失效，直接作废（重扫会按新指纹重新入队）
+  if (task.fingerprint !== task.part_fingerprint) {
+    db.prepare("UPDATE transcode_tasks SET status = 'canceled', finished_at = ?, error = ? WHERE id = ?")
+      .run(nowIso(), "source fingerprint changed", task.id);
+    return true;
+  }
+
+  const profileName = (task.profile === "saving" ? "saving" : "main") as HlsProfileName;
+  db.prepare("UPDATE transcode_tasks SET status = 'running', started_at = ?, progress = 0 WHERE id = ?").run(nowIso(), task.id);
+  db.prepare("UPDATE media_parts SET hls_status = 'running', hls_error = NULL WHERE id = ?").run(task.part_id);
+
+  const root = hlsCacheDir();
+  mkdirSync(root, { recursive: true });
+  const temporaryDir = join(root, `${task.fingerprint}.tmp-${task.id}`);
+  const profileDir = join(temporaryDir, profileName);
+
+  try {
+    if (!existsSync(task.path)) {
+      throw new Error(`source file missing: ${task.path}`);
+    }
+    const media = await probeMedia(task.path);
+    const keyframeInterval = profileName === "main" ? await measureKeyframeInterval(task.path) : 0;
+    const profile = planHlsProfile(media, keyframeInterval, profileName);
+    const encoder = profile.copy ? "copy" : await detectHlsEncoder();
+
+    rmSync(temporaryDir, { recursive: true, force: true });
+    mkdirSync(profileDir, { recursive: true });
+
+    let lastPercent = 0;
+    const onStdout = (chunk: string) => {
+      // ffmpeg -progress 输出形如 out_time_us=1234567
+      const match = chunk.match(/out_time_us=(\d+)/);
+      if (!match || !task.duration_seconds) return;
+      const seconds = Number(match[1]) / 1_000_000;
+      const ratio = Math.min(1, Math.max(0, seconds / task.duration_seconds));
+      const percent = Math.floor(ratio * 100);
+      if (percent > lastPercent) {
+        lastPercent = percent;
+        db.prepare("UPDATE transcode_tasks SET progress = ? WHERE id = ?").run(ratio, task.id);
+      }
+    };
+
+    log.info("transcode start", { partId: task.part_id, profile: profileName, encoder, copy: profile.copy });
+    await runProcess(getFfmpegPath(), hlsFfmpegArgs(task.path, profile, profileDir, encoder), HLS_PROCESS_TIMEOUT_MS, signal, onStdout);
+
+    const playlistPath = join(profileDir, "index.m3u8");
+    if (!existsSync(playlistPath)) {
+      throw new Error("ffmpeg did not produce an HLS playlist");
+    }
+    const summary = summarizePlaylist(playlistPath);
+    if (summary.segments === 0) {
+      throw new Error("HLS playlist has no segments");
+    }
+
+    // 按档位原子发布：把旧的同档位目录挪走再改名，避免 Windows 下 rename 到已存在目录失败
+    const packageDir = hlsPackageDir(task.fingerprint);
+    mkdirSync(packageDir, { recursive: true });
+    const finalProfileDir = join(packageDir, profileName);
+    if (existsSync(finalProfileDir)) {
+      rmSync(finalProfileDir, { recursive: true, force: true });
+    }
+    renameSync(profileDir, finalProfileDir);
+
+    const bandwidthBps = Math.round((profile.copy ? (media.videoBitrate ?? 0) / 1000 : profile.videoBitrateKbps) + profile.audioBitrateKbps) * 1000 * 1.1;
+    const entry: HlsLadderEntry = { ...profile, bandwidthBps, segments: summary.segments, durationSeconds: summary.durationSeconds };
+    const existing = readLadder(
+      (db.prepare("SELECT hls_ladder FROM media_parts WHERE id = ?").get(task.part_id) as { hls_ladder: string | null } | undefined)?.hls_ladder ?? null
+    ).filter((item) => item.name !== entry.name);
+    const ladder = [...existing, entry].sort((a, b) => b.height - a.height);
+    writeMasterPlaylist(task.fingerprint, ladder);
+
+    const bytesOut = directorySize(packageDir);
+    const timestamp = nowIso();
+    db.prepare(`
+      UPDATE media_parts
+      SET hls_path = ?, hls_fingerprint = ?, hls_status = 'ready', hls_error = NULL,
+          hls_ladder = ?, hls_updated_at = ?, hls_attempts = 0
+      WHERE id = ?
+    `).run(packageDir, task.fingerprint, JSON.stringify(ladder), timestamp, task.part_id);
+    db.prepare(`
+      UPDATE transcode_tasks
+      SET status = 'complete', progress = 1, finished_at = ?, encoder = ?, bytes_out = ?, duration_ms = ?, error = NULL
+      WHERE id = ?
+    `).run(timestamp, encoder, bytesOut, Date.now() - startedAt, task.id);
+    log.info("transcode complete", { partId: task.part_id, profile: profileName, segments: summary.segments, ms: Date.now() - startedAt });
+    return true;
+  } catch (error) {
+    if (error instanceof ProcessAbortedError) {
+      // 主动中断（worker 退出）：不算失败，放回队列等重启后继续
+      db.prepare("UPDATE transcode_tasks SET status = 'queued', progress = 0, started_at = NULL WHERE id = ?").run(task.id);
+      db.prepare("UPDATE media_parts SET hls_status = 'queued' WHERE id = ?").run(task.part_id);
+      return true;
+    }
+    const attempt = task.attempt + 1;
+    const message = errorMessage(error);
+    const exhausted = attempt >= task.max_attempts;
+    // 指数退避：1 次失败等 2 分钟，2 次等 4 分钟
+    const nextAttemptAt = exhausted ? null : new Date(Date.now() + 2 ** attempt * 60_000).toISOString();
+    db.prepare(`
+      UPDATE transcode_tasks
+      SET status = ?, attempt = ?, error = ?, next_attempt_at = ?, finished_at = ?, duration_ms = ?
+      WHERE id = ?
+    `).run(exhausted ? "failed" : "queued", attempt, message, nextAttemptAt, nowIso(), Date.now() - startedAt, task.id);
+    db.prepare("UPDATE media_parts SET hls_status = ?, hls_error = ?, hls_attempts = ? WHERE id = ?")
+      .run(exhausted ? "failed" : "queued", message, attempt, task.part_id);
+    log.warn("transcode failed", { partId: task.part_id, profile: profileName, attempt, exhausted, error: message });
+    return true;
+  } finally {
+    try {
+      rmSync(temporaryDir, { recursive: true, force: true });
+    } catch {
+      // 临时目录残留无害，下次同任务入队时会先清一遍
+    }
+  }
+}
+
+function directorySize(dir: string): number {
+  let total = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const target = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      total += directorySize(target);
+    } else {
+      total += safeStat(target)?.size ?? 0;
+    }
+  }
+  return total;
+}
+
+/**
+ * 清理 media-cache 里没人引用的文件。
+ *
+ * DB 只记录「主产物」路径，而实际文件还包括图片变体（<fp>.w320.webp）与转码临时残留，
+ * 这些不会随条目删除而被回收。这里按「未被引用 + 超过保留期」双条件清理，避免误删。
+ */
+export function pruneOrphanCacheFiles(retainDays = Number(process.env.HILI_CACHE_PRUNE_DAYS ?? 30)) {
+  const db = getSqlite();
+  const cacheDir = getAppMediaCacheDir();
+  if (!existsSync(cacheDir)) return 0;
+
+  const referenced = new Set<string>();
+  const collect = (sql: string, column: string) => {
+    for (const row of db.prepare(sql).all() as Record<string, string | null>[]) {
+      const value = row[column];
+      if (value) referenced.add(resolve(value));
+    }
+  };
+  collect("SELECT generated_cover_path AS p FROM media_items WHERE generated_cover_path IS NOT NULL", "p");
+  collect("SELECT stream_path AS p FROM media_parts WHERE stream_path IS NOT NULL", "p");
+  collect("SELECT preview_sprite_path AS p FROM media_parts WHERE preview_sprite_path IS NOT NULL", "p");
+  collect("SELECT thumbnail_path AS p FROM media_images WHERE thumbnail_path IS NOT NULL", "p");
+
+  const cutoff = Date.now() - retainDays * 24 * 60 * 60 * 1000;
+  let removed = 0;
+  for (const entry of readdirSync(cacheDir, { withFileTypes: true })) {
+    const target = join(cacheDir, entry.name);
+    // hls 目录单独按 fingerprint 引用判定
+    if (entry.isDirectory()) {
+      if (entry.name !== "hls") continue;
+      for (const pkg of readdirSync(target, { withFileTypes: true })) {
+        const pkgPath = join(target, pkg.name);
+        const fingerprint = pkg.name.split(".tmp-")[0];
+        const inUse = db.prepare("SELECT 1 FROM media_parts WHERE hls_fingerprint = ? AND hls_status = 'ready' LIMIT 1").get(fingerprint);
+        if (inUse) continue;
+        if ((safeStat(pkgPath)?.mtimeMs ?? 0) > cutoff) continue;
+        rmSync(pkgPath, { recursive: true, force: true });
+        removed += 1;
+      }
+      continue;
+    }
+    if (referenced.has(resolve(target))) continue;
+    if ((safeStat(target)?.mtimeMs ?? 0) > cutoff) continue;
+    rmSync(target, { force: true });
+    removed += 1;
+  }
+  if (removed > 0) log.info("pruned orphan cache files", { removed });
+  return removed;
+}
+
+/**
+ * HLS 缓存容量上限：超了按 last_played_at 从旧到新淘汰。
+ * 没有这个兜底，长期使用会把磁盘慢慢吃满。
+ */
+export function enforceHlsCacheBudget() {
+  const db = getSqlite();
+  const maxBytes = Number(process.env.HILI_HLS_MAX_BYTES ?? HLS_DEFAULT_MAX_BYTES);
+  const total = (db.prepare("SELECT COALESCE(SUM(bytes_out), 0) AS total FROM transcode_tasks").get() as { total: number }).total;
+  if (total <= maxBytes) return 0;
+
+  const candidates = db.prepare(`
+    SELECT mp.id, mp.hls_fingerprint, COALESCE(t.bytes_out, 0) AS bytes
+    FROM media_parts mp
+    LEFT JOIN transcode_tasks t ON t.part_id = mp.id AND t.status = 'complete'
+    WHERE mp.hls_status = 'ready'
+    ORDER BY COALESCE(mp.last_played_at, mp.hls_updated_at, '') ASC
+  `).all() as { id: string; hls_fingerprint: string | null; bytes: number }[];
+
+  let remaining = total;
+  let removed = 0;
+  for (const row of candidates) {
+    if (remaining <= maxBytes) break;
+    removeHlsArtifacts(row.hls_fingerprint);
+    db.prepare("UPDATE media_parts SET hls_path = NULL, hls_status = 'none', hls_ladder = NULL, hls_fingerprint = NULL WHERE id = ?").run(row.id);
+    db.prepare("DELETE FROM transcode_tasks WHERE part_id = ?").run(row.id);
+    remaining -= row.bytes;
+    removed += 1;
+  }
+  if (removed > 0) log.info("evicted hls artifacts", { removed, maxBytes });
+  return removed;
+}
+
+/** 记录一次播放，供缓存淘汰排序使用。 */
+export function markPartPlayed(partId: string) {
+  getSqlite().prepare("UPDATE media_parts SET last_played_at = ?, play_count = play_count + 1 WHERE id = ?").run(nowIso(), partId);
+}
+
+/**
+ * 后台预热：为「最近看过 / 最近入库」的分P 排队生成 HLS。
+ *
+ * 只在小队列时补货：转码比扫描慢得多，一次性把整库塞进队列会让新内容排在很久之后，
+ * 也会让磁盘迅速膨胀。每轮只补一小批，永远优先处理最近活跃的内容。
+ */
+export function enqueueWarmupTranscodes(limit = Number(process.env.HILI_HLS_WARMUP ?? 12)) {
+  if (limit <= 0) return 0;
+  const db = getSqlite();
+  const pending = (db.prepare("SELECT COUNT(*) AS n FROM transcode_tasks WHERE status IN ('queued', 'running')").get() as { n: number }).n;
+  if (pending >= limit) return 0;
+
+  const rows = db.prepare(`
+    SELECT mp.id
+    FROM media_parts mp
+    JOIN media_items mi ON mi.id = mp.item_id
+    LEFT JOIN watch_progress wp ON wp.item_id = mi.id
+    WHERE mi.hidden = 0
+      AND (mp.hls_status IS NULL OR mp.hls_status NOT IN ('ready', 'running', 'queued'))
+      AND mp.compatibility_status <> 'failed'
+      AND NOT EXISTS (
+        SELECT 1 FROM transcode_tasks t
+        WHERE t.part_id = mp.id AND t.status IN ('queued', 'running')
+      )
+    ORDER BY (wp.updated_at IS NULL), COALESCE(wp.updated_at, mi.first_seen_at) DESC
+    LIMIT ?
+  `).all(limit - pending) as { id: string }[];
+
+  for (const row of rows) {
+    enqueueTranscode(row.id, "main", 0);
+  }
+  if (rows.length > 0) log.info("queued warmup transcodes", { count: rows.length });
+  return rows.length;
+}
+
+/**
+ * 扫描忙碌标志。
+ * 转码会长时间占满 CPU，扫描阶段又要跑 ffmpeg 出缩略图；
+ * worker 的转码循环据此让路，避免两个队列互相饿死。
+ */
+let scanBusy = false;
+
+export function isScanBusy() {
+  return scanBusy;
+}
+
+function setScanBusy(value: boolean) {
+  scanBusy = value;
+}
+
+/** 启动自检：把上次进程留下的 running 任务放回队列，并清掉半成品临时目录。 */
+export function recoverInterruptedTranscodeTasks() {
+  const db = getSqlite();
+  const stuck = db.prepare("SELECT id, part_id FROM transcode_tasks WHERE status = 'running'").all() as { id: string; part_id: string }[];
+  for (const task of stuck) {
+    db.prepare("UPDATE transcode_tasks SET status = 'queued', progress = 0, started_at = NULL WHERE id = ?").run(task.id);
+    db.prepare("UPDATE media_parts SET hls_status = 'queued' WHERE id = ?").run(task.part_id);
+  }
+  const root = hlsCacheDir();
+  if (existsSync(root)) {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.includes(".tmp-")) continue;
+      rmSync(join(root, entry.name), { recursive: true, force: true });
+    }
+  }
+  if (stuck.length > 0) log.info("recovered interrupted transcode tasks", { count: stuck.length });
+  return stuck.length;
 }
