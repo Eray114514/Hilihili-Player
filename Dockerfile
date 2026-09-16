@@ -33,6 +33,8 @@ ENV HILI_FFPROBE_PATH=/usr/bin/ffprobe
 WORKDIR /app
 # ffmpeg 用于缩略图/雪碧图/转码；Intel 媒体驱动 + oneVPL/MFX 运行时用于 QSV 硬件编码
 # （需要非自由组件，故先把 non-free 加进源）。容器还需映射 /dev/dri，见 docker-compose.yml。
+# libmfx-gen1.2 是 oneVPL GPU 运行时：12/13 代核显必须由它支撑，
+# 只装 libmfx1 调度器会报 "MFX session: unsupported (-3)"。
 # 拿不到 /dev/dri 或驱动时 packages/media 会自动回退 libx264，不会因此不可用。
 RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
       sed -i 's/^Components: .*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources; \
@@ -40,7 +42,7 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
       sed -i 's/ main$/ main contrib non-free non-free-firmware/' /etc/apt/sources.list; \
     fi \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg intel-media-va-driver-non-free libmfx1 libvpl2 \
+    && apt-get install -y --no-install-recommends ffmpeg intel-media-va-driver-non-free libmfx1 libmfx-gen1.2 libvpl2 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=backend-deploy /prod/backend ./
 # 以 root 运行：named volume 挂载的 /data 可能含旧镜像以 root 创建的
